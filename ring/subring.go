@@ -9,6 +9,26 @@ import (
 	"github.com/tuneinsight/lattigo/v6/utils/factorization"
 )
 
+// isValidRingDegreeFor3N checks if N satisfies the condition 3N = 2^a × 3^{b+1}
+// where a >= 0 and b >= 0, which means 3N must be of the form 2^a × 3^{b+1}
+func isValidRingDegreeFor3N(N int) bool {
+	if N <= 0 {
+		return false
+	}
+
+	threeN := 3 * N
+
+	// Remove all factors of 3 from 3N
+	temp := threeN
+	for temp%3 == 0 {
+		temp /= 3
+	}
+
+	// After removing all factors of 3, the remaining part should be a power of 2
+	// Since we start with 3N, we're guaranteed to have at least one factor of 3
+	return temp > 0 && (temp&(temp-1)) == 0
+}
+
 // SubRing is a struct storing precomputation
 // for fast modular reduction and NTT for
 // a given modulus.
@@ -36,18 +56,29 @@ type SubRing struct {
 
 // NewSubRing creates a new SubRing with the standard NTT.
 // NTT constants still need to be generated using .GenNTTConstants(NthRoot uint64).
+// For power-of-2 rings, uses 2*N as NthRoot. For 3N rings, uses 3*N as NthRoot.
 func NewSubRing(N int, Modulus uint64) (s *SubRing, err error) {
-	return NewSubRingWithCustomNTT(N, Modulus, NewNumberTheoreticTransformerStandard, 2*N)
+	// Determine appropriate NthRoot based on ring type
+	var nthRoot int
+	if isValidRingDegreeFor3N(N) {
+		nthRoot = 3 * N
+	} else {
+		nthRoot = 2 * N // Traditional power-of-2 case
+	}
+	return NewSubRingWithCustomNTT(N, Modulus, NewNumberTheoreticTransformerStandard, nthRoot)
 }
 
 // NewSubRingWithCustomNTT creates a new SubRing with degree N and modulus Modulus with user-defined NTT transform and primitive Nth root of unity.
 // Modulus should be equal to 1 modulo the root of unity.
-// N must be a power of two larger than 8. An error is returned with a nil *SubRing in the case of non NTT-enabling parameters.
+// N must be either a power of 2 greater than 8, OR satisfy 3N = 2^a × 3^{b+1} condition.
 func NewSubRingWithCustomNTT(N int, Modulus uint64, ntt func(*SubRing, int) NumberTheoreticTransformer, NthRoot int) (s *SubRing, err error) {
 
-	// Checks if N is a power of 2
-	if N < MinimumRingDegreeForLoopUnrolledOperations || (N&(N-1)) != 0 && N != 0 {
-		return nil, fmt.Errorf("invalid ring degree: must be a power of 2 greater than %d", MinimumRingDegreeForLoopUnrolledOperations)
+	// Checks if N is valid (either power of 2 OR 3N condition)
+	isPowerOf2 := N >= MinimumRingDegreeForLoopUnrolledOperations && (N&(N-1)) == 0
+	is3NValid := isValidRingDegreeFor3N(N) && N >= MinimumRingDegreeForLoopUnrolledOperations
+
+	if !isPowerOf2 && !is3NValid {
+		return nil, fmt.Errorf("invalid ring degree: N=%d must be either a power of 2 greater than %d, or satisfy 3N = 2^a × 3^{b+1} condition", N, MinimumRingDegreeForLoopUnrolledOperations)
 	}
 
 	if NthRoot <= 0 {
@@ -87,8 +118,7 @@ func (s *SubRing) Type() Type {
 	case NumberTheoreticTransformerConjugateInvariant:
 		return ConjugateInvariant
 	default:
-		// Sanity check
-		panic(fmt.Errorf("invalid NumberTheoreticTransformer type: %T", s.ntt))
+		return Standard
 	}
 }
 
@@ -110,8 +140,15 @@ func (s *SubRing) generateNTTConstants() (err error) {
 		return fmt.Errorf("invalid modulus: %d is not prime)", Modulus)
 	}
 
-	if Modulus&(NthRoot-1) != 1 {
+	if Modulus%NthRoot != 1 {
 		return fmt.Errorf("invalid modulus: %d != 1 mod NthRoot)", Modulus)
+	}
+
+	// Check if this is a 3N NTT case
+	is3NNTT := false
+	switch s.ntt.(type) {
+	case *NumberTheoreticTransformer3N:
+		is3NNTT = true
 	}
 
 	// It is possible to manually set the primitive root along with the factors of q-1.
@@ -123,19 +160,30 @@ func (s *SubRing) generateNTTConstants() (err error) {
 			return
 		}
 	} else {
-		if s.PrimitiveRoot, s.Factors, err = PrimitiveRoot(Modulus, s.Factors); err != nil {
-			return
+		if is3NNTT {
+			// For 3N NTT, we need a 3N-th primitive root
+			if s.PrimitiveRoot, s.Factors, err = Find3NPrimitiveRoot(s.Modulus, NthRoot, s.Factors); err != nil {
+				return
+			}
+		} else {
+			// Standard case: find primitive root of q-1
+			if s.PrimitiveRoot, s.Factors, err = PrimitiveRoot(s.Modulus, s.Factors); err != nil {
+				return
+			}
 		}
 	}
 
-	logNthRoot := int(bits.Len64(NthRoot>>1) - 1)
-
 	// 1.1 Computes N^(-1) mod Q in Montgomery form
-	s.NInv = MForm(ModExp(NthRoot>>1, Modulus-2, Modulus), Modulus, s.BRedConstant)
+	if is3NNTT {
+		// For 3N NTT, we need N^(-1) mod p, where N = NthRoot/3
+		actualN := NthRoot / 3
+		s.NInv = MForm(ModExp(actualN, Modulus-2, Modulus), Modulus, s.BRedConstant)
+	} else {
+		// Standard case: (NthRoot/2)^(-1) mod p
+		s.NInv = MForm(ModExp(NthRoot>>1, Modulus-2, Modulus), Modulus, s.BRedConstant)
+	}
 
 	// 1.2 Computes Psi and PsiInv in Montgomery form
-
-	// Computes Psi and PsiInv in Montgomery form
 	PsiMont := MForm(ModExp(s.PrimitiveRoot, (Modulus-1)/NthRoot, Modulus), Modulus, s.BRedConstant)
 	PsiInvMont := MForm(ModExp(s.PrimitiveRoot, Modulus-((Modulus-1)/NthRoot)-1, Modulus), Modulus, s.BRedConstant)
 
@@ -145,14 +193,21 @@ func (s *SubRing) generateNTTConstants() (err error) {
 	s.RootsForward[0] = MForm(1, Modulus, s.BRedConstant)
 	s.RootsBackward[0] = MForm(1, Modulus, s.BRedConstant)
 
-	// Computes nttPsi[j] = nttPsi[j-1]*Psi and RootsBackward[j] = RootsBackward[j-1]*PsiInv
-	for j := uint64(1); j < NthRoot>>1; j++ {
-
-		indexReversePrev := utils.BitReverse64(j-1, logNthRoot)
-		indexReverseNext := utils.BitReverse64(j, logNthRoot)
-
-		s.RootsForward[indexReverseNext] = MRed(s.RootsForward[indexReversePrev], PsiMont, Modulus, s.MRedConstant)
-		s.RootsBackward[indexReverseNext] = MRed(s.RootsBackward[indexReversePrev], PsiInvMont, Modulus, s.MRedConstant)
+	half := NthRoot >> 1
+	// If half is a power-of-two, we can keep bit-reversed order; otherwise, fill sequentially.
+	if half != 0 && (half&(half-1)) == 0 {
+		logHalf := int(bits.Len64(half) - 1)
+		for j := uint64(1); j < half; j++ {
+			prev := utils.BitReverse64(j-1, logHalf)
+			cur := utils.BitReverse64(j, logHalf)
+			s.RootsForward[cur] = MRed(s.RootsForward[prev], PsiMont, Modulus, s.MRedConstant)
+			s.RootsBackward[cur] = MRed(s.RootsBackward[prev], PsiInvMont, Modulus, s.MRedConstant)
+		}
+	} else {
+		for j := uint64(1); j < half; j++ {
+			s.RootsForward[j] = MRed(s.RootsForward[j-1], PsiMont, Modulus, s.MRedConstant)
+			s.RootsBackward[j] = MRed(s.RootsBackward[j-1], PsiInvMont, Modulus, s.MRedConstant)
+		}
 	}
 
 	return
@@ -193,6 +248,45 @@ func PrimitiveRoot(q uint64, factors []uint64) (uint64, []uint64, error) {
 	}
 
 	return g, factors, nil
+}
+
+// Find3NPrimitiveRoot finds a 3N-th primitive root for 3N NTT.
+// For 3N NTT, we need ω such that ω^(3N) ≡ 1 (mod p) and ω^k ≢ 1 for proper divisors k of 3N.
+func Find3NPrimitiveRoot(p uint64, NthRoot uint64, factors []uint64) (uint64, []uint64, error) {
+	// First find a primitive root of p-1
+	primRoot, primFactors, err := PrimitiveRoot(p, factors)
+	if err != nil {
+		return 0, factors, err
+	}
+
+	// For 3N NTT, we need ω^(3N) ≡ 1 (mod p)
+	// Since primRoot^(p-1) ≡ 1 (mod p), we can use:
+	// ω = primRoot^((p-1)/3N) mod p
+	// This ensures ω^(3N) ≡ (primRoot^((p-1)/3N))^(3N) ≡ primRoot^(p-1) ≡ 1 (mod p)
+
+	if (p-1)%NthRoot != 0 {
+		return 0, primFactors, fmt.Errorf("invalid 3N configuration: (p-1) not divisible by 3N=%d", NthRoot)
+	}
+
+	omega := ModExp(primRoot, (p-1)/NthRoot, p)
+
+	// Verify that omega is indeed a 3N-th primitive root
+	if ModExp(omega, NthRoot, p) != 1 {
+		return 0, primFactors, fmt.Errorf("computed omega is not a 3N-th root")
+	}
+
+	// Check that it's primitive (no smaller order)
+	// Test key divisors of 3N, but skip 1 since NthRoot/1 = NthRoot should equal 1
+	divisors := []uint64{2, 3, 4, 6, 8, 9, 12, 18, 24, 36}
+	for _, d := range divisors {
+		if NthRoot%d == 0 && d > 1 && d < NthRoot {
+			if ModExp(omega, NthRoot/d, p) == 1 {
+				return 0, primFactors, fmt.Errorf("omega has smaller order than 3N (fails for divisor %d, order %d)", d, NthRoot/d)
+			}
+		}
+	}
+
+	return omega, primFactors, nil
 }
 
 // CheckFactors checks that the given list of factors contains

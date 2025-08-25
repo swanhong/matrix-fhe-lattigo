@@ -12,6 +12,54 @@ func IsPrime(x uint64) bool {
 	return bignum.NewInt(x).ProbablyPrime(0)
 }
 
+// Find3NFriendlyPrime finds a prime p such that p ≡ 1 (mod 3N) for 3N primitive root support
+func Find3NFriendlyPrime(N int, bitSize int) (uint64, error) {
+	threeN := uint64(3 * N)
+
+	// Start from a base value around 2^bitSize
+	base := uint64(1) << bitSize
+
+	// Find the first multiple of 3N that is >= base
+	firstMultiple := ((base-1)/threeN + 1) * threeN
+
+	// Search for primes of the form k*3N + 1
+	for k := uint64(0); k < 1000; k++ {
+		candidate := firstMultiple + k*threeN + 1
+
+		if candidate > 0xffffffffffffffff-threeN {
+			break // Avoid overflow
+		}
+
+		if IsPrime(candidate) {
+			// Verify it's actually 3N-friendly
+			if candidate%threeN == 1 {
+				return candidate, nil
+			}
+		}
+	}
+
+	// Search backwards from base
+	if base > threeN {
+		lastMultiple := ((base - 1) / threeN) * threeN
+		for k := uint64(0); k < 1000 && lastMultiple >= k*threeN; k++ {
+			candidate := lastMultiple - k*threeN + 1
+
+			if candidate <= 1 {
+				break
+			}
+
+			if IsPrime(candidate) {
+				// Verify it's actually 3N-friendly
+				if candidate%threeN == 1 {
+					return candidate, nil
+				}
+			}
+		}
+	}
+
+	return 0, fmt.Errorf("could not find 3N-friendly prime for N=%d, bitSize=%d", N, bitSize)
+}
+
 // NTTFriendlyPrimesGenerator is a struct used to generate NTT friendly primes.
 type NTTFriendlyPrimesGenerator struct {
 	Size                           float64

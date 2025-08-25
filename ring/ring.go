@@ -241,31 +241,53 @@ func (r Ring) BRedConstants() (BRC [][2]uint64) {
 	return
 }
 
-// NewRing creates a new RNS Ring with degree N and coefficient moduli Moduli with Standard NTT. N must be a power of two larger than 8. Moduli should be
-// a non-empty []uint64 with distinct prime elements. All moduli must also be equal to 1 modulo 2*N.
+// NewRing creates a new RNS Ring with degree N and coefficient moduli Moduli with Standard NTT.
+// N must be a power of two larger than 8 or satisfy 3N = 2^a * 3^{b+1} condition.
+// Moduli should be a non-empty []uint64 with distinct prime elements.
+// For power-of-2 rings: All moduli must be equal to 1 modulo 2*N.
+// For 3N rings: All moduli must be equal to 1 modulo 3*N.
 // An error is returned with a nil *Ring in the case of non NTT-enabling parameters.
 func NewRing(N int, Moduli []uint64) (r *Ring, err error) {
-	return NewRingWithCustomNTT(N, Moduli, NewNumberTheoreticTransformerStandard, 2*N)
+	// Determine the appropriate NthRoot and NTT transformer based on ring type
+	if N%3 == 0 && isValidRingDegreeFor3N(N) {
+		return NewRingWithCustomNTT(N, Moduli, NewNumberTheoreticTransformer3N, 3*N)
+	} else {
+		return NewRingWithCustomNTT(N, Moduli, NewNumberTheoreticTransformerStandard, 2*N)
+	}
 }
 
-// NewRingConjugateInvariant creates a new RNS Ring with degree N and coefficient moduli Moduli with Conjugate Invariant NTT. N must be a power of two larger than 8. Moduli should be
-// a non-empty []uint64 with distinct prime elements. All moduli must also be equal to 1 modulo 4*N.
+// NewRingConjugateInvariant creates a new RNS Ring with degree N and coefficient moduli Moduli with Conjugate Invariant NTT.
+// N must be a power of two larger than 8 or satisfy 3N = 2^a * 3^{b+1} condition.
+// Moduli should be a non-empty []uint64 with distinct prime elements.
+// For power-of-2 rings: All moduli must be equal to 1 modulo 4*N.
+// For 3N rings: All moduli must be equal to 1 modulo 6*N.
 // An error is returned with a nil *Ring in the case of non NTT-enabling parameters.
 func NewRingConjugateInvariant(N int, Moduli []uint64) (r *Ring, err error) {
 	return NewRingWithCustomNTT(N, Moduli, NewNumberTheoreticTransformerConjugateInvariant, 4*N)
 }
 
 // NewRingFromType creates a new RNS Ring with degree N and coefficient moduli Moduli for which the type of NTT is determined by the ringType argument.
-// If ringType==Standard, the ring is instantiated with standard NTT with the Nth root of unity 2*N. If ringType==ConjugateInvariant, the ring
-// is instantiated with a ConjugateInvariant NTT with Nth root of unity 4*N. N must be a power of two larger than 8.
+// If ringType==Standard, the ring is instantiated with standard NTT with the Nth root of unity 2*N (or 3*N for 3N rings).
+// If ringType==ConjugateInvariant, the ring is instantiated with a ConjugateInvariant NTT with Nth root of unity 4*N (or 6*N for 3N rings).
+// N must be a power of two larger than 8 or satisfy 3N = 2^a * 3^{b+1} condition.
 // Moduli should be a non-empty []uint64 with distinct prime elements. All moduli must also be equal to 1 modulo the root of unity.
 // An error is returned with a nil *Ring in the case of non NTT-enabling parameters.
 func NewRingFromType(N int, Moduli []uint64, ringType Type) (r *Ring, err error) {
+	is3NRing := N%3 == 0 && isValidRingDegreeFor3N(N)
+
 	switch ringType {
 	case Standard:
-		return NewRingWithCustomNTT(N, Moduli, NewNumberTheoreticTransformerStandard, 2*N)
+		if is3NRing {
+			return NewRingWithCustomNTT(N, Moduli, NewNumberTheoreticTransformer3N, 3*N)
+		} else {
+			return NewRingWithCustomNTT(N, Moduli, NewNumberTheoreticTransformerStandard, 2*N)
+		}
 	case ConjugateInvariant:
-		return NewRingWithCustomNTT(N, Moduli, NewNumberTheoreticTransformerConjugateInvariant, 4*N)
+		if is3NRing {
+			return NewRingWithCustomNTT(N, Moduli, NewNumberTheoreticTransformer3N, 6*N)
+		} else {
+			return NewRingWithCustomNTT(N, Moduli, NewNumberTheoreticTransformerConjugateInvariant, 4*N)
+		}
 	default:
 		return nil, fmt.Errorf("invalid ring type")
 	}
@@ -274,13 +296,16 @@ func NewRingFromType(N int, Moduli []uint64, ringType Type) (r *Ring, err error)
 // NewRingWithCustomNTT creates a new RNS Ring with degree N and coefficient moduli Moduli with user-defined NTT transform and primitive Nth root of unity.
 // ModuliChain should be a non-empty []uint64 with distinct prime elements.
 // All moduli must also be equal to 1 modulo the root of unity.
-// N must be a power of two larger than 8. An error is returned with a nil *Ring in the case of non NTT-enabling parameters.
+// N must be a power of two or satisfy 3N = 2^a * 3^{b+1} condition for 3N rings.
 func NewRingWithCustomNTT(N int, ModuliChain []uint64, ntt func(*SubRing, int) NumberTheoreticTransformer, NthRoot int) (r *Ring, err error) {
 	r = new(Ring)
 
-	// Checks if N is a power of 2
-	if N < MinimumRingDegreeForLoopUnrolledOperations || (N&(N-1)) != 0 && N != 0 {
-		return nil, fmt.Errorf("invalid ring degree: must be a power of 2 greater than %d", MinimumRingDegreeForLoopUnrolledOperations)
+	// Check if N is valid for power-of-2 or 3N rings
+	isPowerOf2 := N >= MinimumRingDegreeForLoopUnrolledOperations && (N&(N-1)) == 0
+	is3NValid := isValidRingDegreeFor3N(N)
+
+	if !isPowerOf2 && !is3NValid {
+		return nil, fmt.Errorf("invalid ring degree: must be a power of 2 greater than %d or satisfy 3N = 2^a * 3^{b+1} condition", MinimumRingDegreeForLoopUnrolledOperations)
 	}
 
 	if len(ModuliChain) == 0 {
