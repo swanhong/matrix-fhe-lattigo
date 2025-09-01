@@ -1,4 +1,4 @@
-package matrixckks
+package matrix_ckks
 
 import (
 	"fmt"

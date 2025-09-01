@@ -1,6 +1,14 @@
-// Package matrixckks implements a matrix-friendly version of the CKKS scheme
-// that uses 3N-ring instead of power-of-2 N for better matrix operations support.
-package matrixckks
+// Package matrix_ckks implements a matrix-friendly version of the CKKS scheme
+// that uses 3N-ring structure instead of power-of-2 rings for better matrix operations.
+//
+// The main differences from standard CKKS:
+// 1. Supports ring degrees of form N = 2^a * 3^b instead of just N = 2^k
+// 2. Uses 3N-NTT for polynomial operations
+// 3. Optimized for matrix-based computations
+//
+// The implementation provides all standard CKKS operations (encryption, decryption,
+// homomorphic addition, multiplication) while leveraging the 3N-ring structure.
+package matrix_ckks
 
 import (
 	"github.com/tuneinsight/lattigo/v6/core/rlwe"

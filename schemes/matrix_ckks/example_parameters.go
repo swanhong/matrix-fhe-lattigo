@@ -1,4 +1,4 @@
-package matrixckks
+package matrix_ckks
 
 import (
 	"github.com/tuneinsight/lattigo/v6/ring"

@@ -1,4 +1,4 @@
-package matrixckks
+package matrix_ckks
 
 import (
 	"encoding/json"
@@ -57,7 +57,7 @@ type ParametersLiteral struct {
 	LogDefaultScale int                         // Log2 of the default plaintext scale
 }
 
-// GetRLWEParametersLiteral returns the [rlwe.ParametersLiteral] from the target [matrixckks.ParameterLiteral].
+// GetRLWEParametersLiteral returns the [rlwe.ParametersLiteral] from the target [matrix_ckks.ParameterLiteral].
 func (p ParametersLiteral) GetRLWEParametersLiteral() rlwe.ParametersLiteral {
 	// For 3N-ring, we should use LogN = 0 to indicate that we want to use
 	// the actual N value directly rather than 2^LogN. The RLWE layer
