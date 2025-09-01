@@ -78,6 +78,9 @@ type Ring struct {
 	RescaleConstants [][]uint64
 
 	level int
+
+	// Flag indicating if this is a 3N ring (default: false for power-of-2 rings)
+	is3N bool
 }
 
 // ConjugateInvariantRing returns the conjugate invariant ring of the receiver ring.
@@ -153,6 +156,11 @@ func (r Ring) LogN() int {
 	return bits.Len64(uint64(r.N() - 1))
 }
 
+// Is3N returns true if this ring uses 3N structure, false for power-of-2 rings.
+func (r Ring) Is3N() bool {
+	return r.is3N
+}
+
 // LogModuli returns the size of the extended modulus P in bits
 func (r Ring) LogModuli() (logmod float64) {
 	for _, qi := range r.ModuliChain() {
@@ -195,6 +203,7 @@ func (r Ring) AtLevel(level int) *Ring {
 		ModulusAtLevel:   r.ModulusAtLevel,
 		RescaleConstants: r.RescaleConstants,
 		level:            level,
+		is3N:             r.is3N, // Preserve the 3N flag
 	}
 }
 
@@ -249,7 +258,8 @@ func (r Ring) BRedConstants() (BRC [][2]uint64) {
 // An error is returned with a nil *Ring in the case of non NTT-enabling parameters.
 func NewRing(N int, Moduli []uint64) (r *Ring, err error) {
 	// Determine the appropriate NthRoot and NTT transformer based on ring type
-	if N%3 == 0 && isValidRingDegreeFor3N(N) {
+	is3N := N%3 == 0 && isValidRingDegreeFor3N(N)
+	if is3N {
 		return NewRingWithCustomNTT(N, Moduli, NewNumberTheoreticTransformer3N, 3*N)
 	} else {
 		return NewRingWithCustomNTT(N, Moduli, NewNumberTheoreticTransformerStandard, 2*N)
@@ -334,6 +344,9 @@ func NewRingWithCustomNTT(N int, ModuliChain []uint64, ntt func(*SubRing, int) N
 	r.RescaleConstants = rewRescaleConstants(r.SubRings)
 
 	r.level = len(ModuliChain) - 1
+
+	// Set the 3N flag based on ring degree validation
+	r.is3N = is3NValid
 
 	return r, r.generateNTTConstants(nil, nil)
 }
