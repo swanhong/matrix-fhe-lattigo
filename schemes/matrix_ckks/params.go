@@ -124,6 +124,7 @@ func (p Parameters) LogN() int {
 }
 
 // MaxDimensions returns the maximum dimension of the matrix that can be SIMD packed in a single plaintext polynomial.
+// TODO: Catch ring.Matrix case
 func (p Parameters) MaxDimensions() ring.Dimensions {
 	switch p.RingType() {
 	case ring.Standard:
@@ -294,5 +295,44 @@ func (p Parameters) ParametersLiteral() ParametersLiteral {
 		Xs:              pl.Xs,
 		RingType:        pl.RingType,
 		LogDefaultScale: int(math.Log2(pl.DefaultScale.Float64())),
+	}
+}
+
+// LogDefaultScale returns the log2 of the default plaintext
+// scaling factor (rounded to the nearest integer).
+func (p Parameters) LogDefaultScale() int {
+	return int(math.Round(math.Log2(p.DefaultScale().Float64())))
+}
+
+// EncodingPrecision returns the encoding precision in bits of the plaintext values which
+// is max(53, log2(DefaultScale)).
+func (p Parameters) EncodingPrecision() (prec uint) {
+	if log2scale := math.Log2(p.DefaultScale().Float64()); log2scale <= 53 {
+		prec = 53
+	} else {
+		prec = uint(log2scale)
+	}
+
+	return
+}
+
+// PrecisionMode returns the precision mode of the parameters.
+// This value can be [ckks.PREC64] or [ckks.PREC128].
+func (p Parameters) PrecisionMode() PrecisionMode {
+	if p.LogDefaultScale() <= 64 {
+		return PREC64
+	}
+	return PREC128
+}
+
+// LevelsConsumedPerRescaling returns the number of levels (i.e. primes)
+// consumed per rescaling. This value is 1 if the precision mode is PREC64
+// and is 2 if the precision mode is PREC128.
+func (p Parameters) LevelsConsumedPerRescaling() int {
+	switch p.PrecisionMode() {
+	case PREC128:
+		return 2
+	default:
+		return 1
 	}
 }

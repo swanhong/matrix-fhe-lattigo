@@ -65,10 +65,39 @@ type ParametersLiteral struct {
 	NTTFlag      bool                        `json:",omitempty"`
 }
 
+type ParametersLiteral3N struct {
+	order2       int
+	order3       int
+	NthRoot      int                         `json:",omitempty"`
+	Q            []uint64                    `json:",omitempty"`
+	P            []uint64                    `json:",omitempty"`
+	LogQ         []int                       `json:",omitempty"`
+	LogP         []int                       `json:",omitempty"`
+	Xe           ring.DistributionParameters `json:",omitempty"`
+	Xs           ring.DistributionParameters `json:",omitempty"`
+	RingType     ring.Type                   `json:",omitempty"`
+	DefaultScale Scale                       `json:",omitempty"`
+	NTTFlag      bool                        `json:",omitempty"`
+}
+
 // Parameters represents a set of generic RLWE parameters. Its fields are private and
 // immutable. See [ParametersLiteral] for user-specified parameters.
 type Parameters struct {
 	logN         int
+	qi           []uint64
+	pi           []uint64
+	xe           Distribution
+	xs           Distribution
+	ringQ        *ring.Ring
+	ringP        *ring.Ring
+	ringType     ring.Type
+	defaultScale Scale
+	nttFlag      bool
+}
+
+type Parameters3N struct {
+	order2       int
+	order3       int
 	qi           []uint64
 	pi           []uint64
 	xe           Distribution
@@ -131,6 +160,70 @@ func NewParameters(logn int, q, p []uint64, xs, xe DistributionLiteral, ringType
 		params.xe = NewDistribution(xe.(ring.DistributionParameters), logn)
 	default:
 		return Parameters{}, fmt.Errorf("error distribution type must be Ternary or DiscretGaussian but is %T", xe)
+	}
+
+	var warning error
+	if params.XsHammingWeight() == 0 {
+		warning = fmt.Errorf("warning secret standard HammingWeight is 0")
+	}
+
+	if params.xe.Std <= 0 {
+		if warning != nil {
+			warning = fmt.Errorf("%w; warning error standard deviation 0", warning)
+		} else {
+			warning = fmt.Errorf("warning error standard deviation 0")
+		}
+	}
+
+	return params, warning
+}
+
+// CUSTOM
+func NewParameters3N(order2_ int, order3_ int, q, p []uint64, xs, xe DistributionLiteral, ringType ring.Type, defaultScale Scale, NTTFlag bool) (params Parameters3N, err error) {
+
+	var lenP int
+	if p != nil {
+		lenP = len(p)
+	}
+
+	params = Parameters3N{
+		order2:       order2_,
+		order3:       order3_,
+		qi:           make([]uint64, len(q)),
+		pi:           make([]uint64, lenP),
+		ringType:     ringType,
+		defaultScale: defaultScale,
+		nttFlag:      NTTFlag,
+	}
+
+	// pre-check that moduli chain is of valid size and that all factors are prime.
+	// note: the Ring instantiation checks that the moduli are valid NTT-friendly primes.
+	if err = CheckModuli(q, p); err != nil {
+		return Parameters3N{}, err
+	}
+
+	copy(params.qi, q)
+
+	if p != nil {
+		copy(params.pi, p)
+	}
+
+	if err = params.initRings3N(); err != nil {
+		return Parameters3N{}, fmt.Errorf("cannot NewParameters: %w", err)
+	}
+
+	switch xs := xs.(type) {
+	case ring.Ternary, ring.DiscreteGaussian:
+		params.xs = NewDistribution3N(xs.(ring.DistributionParameters), order2_, order3_)
+	default:
+		return Parameters3N{}, fmt.Errorf("secret distribution type must be Ternary or DiscretGaussian but is %T", xs)
+	}
+
+	switch xe := xe.(type) {
+	case ring.Ternary, ring.DiscreteGaussian:
+		params.xe = NewDistribution3N(xe.(ring.DistributionParameters), order2_, order3_)
+	default:
+		return Parameters3N{}, fmt.Errorf("error distribution type must be Ternary or DiscretGaussian but is %T", xe)
 	}
 
 	var warning error
@@ -222,6 +315,66 @@ func NewParametersFromLiteral(paramDef ParametersLiteral) (params Parameters, er
 	return NewParameters(paramDef.LogN, q, p, paramDef.Xs, paramDef.Xe, paramDef.RingType, paramDef.DefaultScale, paramDef.NTTFlag)
 }
 
+func NewParametersFromLiteral3N(paramDef ParametersLiteral3N) (params Parameters3N, err error) {
+
+	if paramDef.Xs == nil {
+		paramDef.Xs = DefaultXs
+	}
+
+	if paramDef.Xe == nil {
+		// prevents the zero value of ParameterLiteral to result in a noise-less parameter instance.
+		// Users should use the NewParameters method to explicitly create noiseless instances.
+		paramDef.Xe = DefaultXe
+	}
+
+	if paramDef.DefaultScale.Cmp(Scale{}) == 0 {
+		s := NewScale(1)
+		paramDef.DefaultScale = s
+	}
+
+	// Invalid moduli configurations: do not allow empty Q and LogQ as well double-set log and non-log fields.
+	if paramDef.Q == nil && paramDef.LogQ == nil {
+		return Parameters3N{}, fmt.Errorf("rlwe.NewParametersFromLiteral: both Q and LogQ fields are empty")
+	}
+	if paramDef.Q != nil && paramDef.LogQ != nil {
+		return Parameters3N{}, fmt.Errorf("rlwe.NewParametersFromLiteral: both Q and LogQ fields are set")
+	}
+	if paramDef.P != nil && paramDef.LogP != nil {
+		return Parameters3N{}, fmt.Errorf("rlwe.NewParametersFromLiteral: both P and LogP fields are set")
+	}
+
+	var (
+		q []uint64 = nil
+		p []uint64 = nil
+	)
+
+	// In case a log prime field is set for either Q or P, the corresponding primes need to be generated.
+	// Note that GenModuli returns nil for Q if logQ == nil, and nil for P if logP == nil.
+	if paramDef.LogQ != nil || paramDef.LogP != nil {
+		switch paramDef.RingType {
+		case ring.Matrix:
+			N := 1 << uint(paramDef.order2)        // 2^order2
+			for i := 0; i < paramDef.order3; i++ { // 3^order3
+				N *= 3
+			}
+			NthRoot := 3 * N
+
+			q, p, err = GenModuli3N(NthRoot, paramDef.LogQ, paramDef.LogP) //3NthRoot
+			if err != nil {
+				return Parameters3N{}, fmt.Errorf("rlwe.NewParametersFromLiteral: unable to generate standard ring moduli: %w", err)
+			}
+		}
+	}
+	// Use the user-provided primes if specified.
+	if q == nil {
+		q = paramDef.Q
+	}
+	if p == nil {
+		p = paramDef.P
+	}
+	return NewParameters3N(paramDef.order2, paramDef.order3, q, p, paramDef.Xs, paramDef.Xe, paramDef.RingType, paramDef.DefaultScale, paramDef.NTTFlag)
+}
+
 // StandardParameters returns a RLWE parameter set that corresponds to the
 // standard dual of a conjugate invariant parameter set. If the receiver is already
 // a standard set, then the method returns the receiver.
@@ -235,6 +388,18 @@ func (p Parameters) StandardParameters() (pci Parameters, err error) {
 		pci.logN = p.logN + 1
 		pci.ringType = ring.Standard
 		err = pci.initRings()
+	default:
+		err = fmt.Errorf("invalid ring type")
+	}
+
+	return
+}
+
+func (p Parameters3N) StandardParameters3N() (pci Parameters3N, err error) {
+
+	switch p.ringType {
+	case ring.Matrix:
+		return p, nil
 	default:
 		err = fmt.Errorf("invalid ring type")
 	}
@@ -263,13 +428,47 @@ func (p Parameters) ParametersLiteral() ParametersLiteral {
 	}
 }
 
+// ParametersLiteral returns the ParametersLiteral of the target Parameters.
+func (p Parameters3N) ParametersLiteral3N() ParametersLiteral3N {
+
+	Q := make([]uint64, len(p.qi))
+	copy(Q, p.qi)
+
+	P := make([]uint64, len(p.pi))
+	copy(P, p.pi)
+
+	return ParametersLiteral3N{
+		order2:       p.order2,
+		order3:       p.order3,
+		Q:            Q,
+		P:            P,
+		Xe:           p.xe.DistributionParameters,
+		Xs:           p.xs.DistributionParameters,
+		RingType:     p.ringType,
+		DefaultScale: p.defaultScale,
+		NTTFlag:      p.nttFlag,
+	}
+}
+
 // GetRLWEParameters returns a pointer to the underlying RLWE parameters.
 func (p Parameters) GetRLWEParameters() *Parameters {
 	return &p
 }
 
+// GetRLWEParameters returns a pointer to the underlying RLWE parameters.
+func (p Parameters3N) GetRLWEParameters() *Parameters3N {
+	return &p
+}
+
 // NewScale creates a new scale using the stored default scale as template.
 func (p Parameters) NewScale(scale interface{}) Scale {
+	newScale := NewScale(scale)
+	newScale.Mod = p.defaultScale.Mod
+	return newScale
+}
+
+// NewScale creates a new scale using the stored default scale as template.
+func (p Parameters3N) NewScale(scale interface{}) Scale {
 	newScale := NewScale(scale)
 	newScale.Mod = p.defaultScale.Mod
 	return newScale
@@ -283,6 +482,24 @@ func (p Parameters) N() int {
 // LogN returns the log of the degree of the polynomial ring
 func (p Parameters) LogN() int {
 	return p.logN
+}
+
+// N returns the ring degree
+func (p Parameters3N) N() int {
+
+	ringDim := 1 << uint(p.order2)  // 2^order2
+	for i := 0; i < p.order3; i++ { // 3^order3
+		ringDim *= 3
+	}
+	return ringDim
+}
+
+func (p Parameters3N) Order2() int {
+	return p.order2
+}
+
+func (p Parameters3N) Order3() int {
+	return p.order3
 }
 
 // NthRoot returns the NthRoot of the ring.
@@ -301,6 +518,16 @@ func (p Parameters) LogNthRoot() int {
 	return bits.Len64(uint64(p.NthRoot() - 1))
 }
 
+// NthRoot returns the NthRoot of the ring.
+func (p Parameters3N) NthRoot() int {
+	if p.RingQ() != nil {
+		/* #nosec G115 -- NthRoot of valid [ring.Ring] is positive */
+		return int(p.RingQ().NthRoot())
+	}
+
+	return 0
+}
+
 // DefaultScale returns the default scaling factor of the plaintext, if any.
 func (p Parameters) DefaultScale() Scale {
 	return p.defaultScale
@@ -316,8 +543,19 @@ func (p Parameters) RingP() *ring.Ring {
 	return p.ringP
 }
 
+func (p Parameters3N) RingP() *ring.Ring {
+	return p.ringP
+}
+func (p Parameters3N) RingQ() *ring.Ring {
+	return p.ringQ
+}
+
 // RingQP returns a pointer to ringQP
 func (p Parameters) RingQP() *ringqp.Ring {
+	return &ringqp.Ring{RingQ: p.ringQ, RingP: p.ringP}
+}
+
+func (p Parameters3N) RingQP() *ringqp.Ring {
 	return &ringqp.Ring{RingQ: p.ringQ, RingP: p.ringP}
 }
 
@@ -326,8 +564,17 @@ func (p Parameters) NTTFlag() bool {
 	return p.nttFlag
 }
 
+func (p Parameters3N) NTTFlag() bool {
+	return p.nttFlag
+}
+
 // Xs returns the Distribution of the secret
 func (p Parameters) Xs() ring.DistributionParameters {
+	return p.xs.DistributionParameters
+}
+
+// Xs returns the Distribution of the secret
+func (p Parameters3N) Xs() ring.DistributionParameters {
 	return p.xs.DistributionParameters
 }
 
@@ -350,6 +597,22 @@ func (p Parameters) XsHammingWeight() int {
 // Xe returns Distribution of the error
 func (p Parameters) Xe() ring.DistributionParameters {
 	return p.xe.DistributionParameters
+}
+
+// XsHammingWeight returns the expected Hamming weight of the secret.
+func (p Parameters3N) XsHammingWeight() int {
+	switch xs := p.xs.DistributionParameters.(type) {
+	case ring.Ternary:
+		if xs.H != 0 {
+			return xs.H
+		} else {
+			return int(math.Ceil(float64(p.N()) * xs.P))
+		}
+	case ring.DiscreteGaussian:
+		return int(math.Ceil(float64(p.N()) * float64(xs.Sigma) * math.Sqrt(2.0/math.Pi)))
+	default:
+		panic(fmt.Sprintf("invalid error distribution: must be DiscretGaussian, Ternary but is %T", xs))
+	}
 }
 
 // NoiseBound returns truncation bound for the error distribution.
@@ -861,12 +1124,84 @@ func GenModuli(LogNthRoot int, logQ, logP []int) (q, p []uint64, err error) {
 	return
 }
 
+// GenModuli generates a valid moduli chain from the provided moduli sizes.
+func GenModuli3N(NthRoot int, logQ, logP []int) (q, p []uint64, err error) {
+
+	if err = checkSizeParams(logN); err != nil {
+		return
+	}
+
+	if err = checkModuliLogSize(logQ, logP); err != nil {
+		return
+	}
+
+	// Extracts all the different primes bit size and maps their number
+	primesbitlen := make(map[int]int)
+	for _, qi := range logQ {
+		primesbitlen[qi]++
+	}
+
+	for _, pj := range logP {
+		primesbitlen[pj]++
+	}
+
+	// For each bit-size, finds that many primes
+	primes := make(map[int][]uint64)
+	for bitsize, value := range primesbitlen {
+
+		/* #nosec G115 -- bitsize cannot be negative */
+		g := ring.NewNTTFriendlyPrimesGenerator(uint64(bitsize), uint64(NthRoot))
+
+		if bitsize == 61 {
+			if primes[bitsize], err = g.NextDownstreamPrimes(value); err != nil {
+				return q, p, fmt.Errorf("cannot GenModuli: failed to generate %d primes of bit-size=61 for LogNthRoot=%d: %w", value, LogNthRoot, err)
+			}
+		} else {
+			if primes[bitsize], err = g.NextAlternatingPrimes(value); err != nil {
+				return q, p, fmt.Errorf("cannot GenModuli: failed to generate %d primes of bit-size=%d for LogNthRoot=%d: %w", value, bitsize, LogNthRoot, err)
+			}
+		}
+	}
+
+	// Assigns the primes to the moduli chain
+	for _, qi := range logQ {
+		q = append(q, primes[qi][0])
+		primes[qi] = primes[qi][1:]
+	}
+
+	// Assigns the primes to the special primes list for the extended ring
+	for _, pj := range logP {
+		p = append(p, primes[pj][0])
+		primes[pj] = primes[pj][1:]
+	}
+
+	return
+}
+
 func (p *Parameters) initRings() (err error) {
 	if p.ringQ, err = ring.NewRingFromType(1<<p.logN, p.qi, p.ringType); err != nil {
 		return fmt.Errorf("initRings/ringQ: %w", err)
 	}
 	if len(p.pi) != 0 {
 		if p.ringP, err = ring.NewRingFromType(1<<p.logN, p.pi, p.ringType); err != nil {
+			return fmt.Errorf("initRings/ringP: %w", err)
+		}
+	}
+	return
+}
+
+func (p *Parameters3N) initRings3N() (err error) {
+
+	ringDim := 1 << uint(p.order2)
+	for i := 0; i < p.order3; i++ {
+		ringDim *= 3
+	}
+
+	if p.ringQ, err = ring.NewRingFromType(ringDim, p.qi, p.ringType); err != nil {
+		return fmt.Errorf("initRings/ringQ: %w", err)
+	}
+	if len(p.pi) != 0 {
+		if p.ringP, err = ring.NewRingFromType(ringDim, p.pi, p.ringType); err != nil {
 			return fmt.Errorf("initRings/ringP: %w", err)
 		}
 	}

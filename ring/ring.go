@@ -30,6 +30,7 @@ type Type int
 const (
 	Standard           = Type(0) // Z[X]/(X^N + 1) (Default)
 	ConjugateInvariant = Type(1) // Z[X+X^-1]/(X^2N + 1)
+	Matrix             = Type(2) // Z[X]/(X^N - X^{N/2} + 1)
 )
 
 // String returns the string representation of the ring Type
@@ -39,6 +40,8 @@ func (rt Type) String() string {
 		return "Standard"
 	case ConjugateInvariant:
 		return "ConjugateInvariant"
+	case Matrix:
+		return "Matrix"
 	default:
 		return "Invalid"
 	}

@@ -43,7 +43,7 @@ func NewEncoder(parameters Parameters, precision ...uint) (ecd *Encoder) {
 	if len(precision) != 0 && precision[0] != 0 {
 		prec = precision[0]
 	} else {
-		prec = 53 // Default precision
+		prec = parameters.EncodingPrecision()
 	}
 
 	ecd = &Encoder{
@@ -62,22 +62,20 @@ func NewEncoder(parameters Parameters, precision ...uint) (ecd *Encoder) {
 	return ecd
 }
 
-// ShallowCopy creates a shallow copy of this [Encoder] in which all the read-only data-structures are
-// shared with the receiver and the temporary buffers are reallocated. The receiver and the returned
-// [Encoder] can be used concurrently.
-func (ecd *Encoder) ShallowCopy() *Encoder {
-	return &Encoder{
-		parameters:   ecd.parameters,
-		prec:         ecd.prec,
-		bigintCoeffs: make([]*big.Int, len(ecd.bigintCoeffs)),
-		qHalf:        bignum.NewInt(0),
-		buff:         ecd.parameters.RingQ().NewPoly(),
-		n:            ecd.n,
-	}
+// Prec returns the precision in bits used by the [Encoder].
+func (ecd *Encoder) Prec() uint {
+	return ecd.prec
+}
+
+// Parameters returns the parameters of the [Encoder].
+func (ecd *Encoder) GetParameters() Parameters {
+	return ecd.parameters
 }
 
 // EncodePolynomial encodes a polynomial (as uint64 coefficients) into a plaintext.
 // This is for basic polynomial operations without complex encoding.
+
+// TODO: construct an encoding using iDFT
 func (ecd *Encoder) EncodePolynomial(values []uint64, pt *rlwe.Plaintext) (err error) {
 	if len(values) > ecd.n {
 		return fmt.Errorf("too many values: %d > %d", len(values), ecd.n)
@@ -157,12 +155,16 @@ func (ecd *Encoder) DecodePolynomial(pt *rlwe.Plaintext, values []uint64) (err e
 	return nil
 }
 
-// Parameters returns the parameters of the [Encoder].
-func (ecd *Encoder) Parameters() Parameters {
-	return ecd.parameters
-}
-
-// Prec returns the precision in bits used by the [Encoder].
-func (ecd *Encoder) Prec() uint {
-	return ecd.prec
+// ShallowCopy creates a shallow copy of this [Encoder] in which all the read-only data-structures are
+// shared with the receiver and the temporary buffers are reallocated. The receiver and the returned
+// [Encoder] can be used concurrently.
+func (ecd *Encoder) ShallowCopy() *Encoder {
+	return &Encoder{
+		parameters:   ecd.parameters,
+		prec:         ecd.prec,
+		bigintCoeffs: make([]*big.Int, len(ecd.bigintCoeffs)),
+		qHalf:        bignum.NewInt(0),
+		buff:         ecd.parameters.RingQ().NewPoly(),
+		n:            ecd.n,
+	}
 }

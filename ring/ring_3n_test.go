@@ -54,7 +54,8 @@ func Test3NPrimitiveRootAndDecomposition(t *testing.T) {
 	t.Logf("Found primitive 3N-th root omega=%d with factors %v", omega, factors)
 	if err != nil {
 		t.Fatalf("Find3NPrimitiveRoot failed: %v (factors=%v)", err, factors)
-	}
+	}	
+	
 	// Check exact order m
 	if got := ModExp(omega, m, p); got != 1 {
 		t.Fatalf("omega^m != 1 mod p")
