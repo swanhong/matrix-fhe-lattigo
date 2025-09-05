@@ -44,9 +44,10 @@ const (
 //
 // Optionally, users may specify the error variance (Sigma), the secrets' density (H), the ring
 // type (RingType). If left unset, standard default values for these field are substituted at parameter creation.
-type ParametersLiteral struct {
-	N               int                         // Ring degree (must be of form 2^a * 3^b)
-	LogNthRoot      int                         // Log2 of the 2N-th primitive root modulus
+type ParametersLiteral3N struct {
+	Order2          int
+	Order3          int                         // Ring degree (must be of form 2^a * 3^b)
+	NthRoot         int                         // Log2 of the 2N-th primitive root modulus
 	Q               []uint64                    // Coefficient modulus (product of primes q_i)
 	P               []uint64                    // Auxiliary modulus for RNS (product of primes p_j)
 	LogQ            []int                       `json:",omitempty"` // Log2 sizes of Q primes
@@ -58,24 +59,23 @@ type ParametersLiteral struct {
 }
 
 // GetRLWEParametersLiteral returns the [rlwe.ParametersLiteral] from the target [matrix_ckks.ParameterLiteral].
-func (p ParametersLiteral) GetRLWEParametersLiteral() rlwe.ParametersLiteral {
+func (p ParametersLiteral3N) GetRLWEParametersLiteral3N() rlwe.ParametersLiteral3N {
 	// For 3N-ring, we should use LogN = 0 to indicate that we want to use
 	// the actual N value directly rather than 2^LogN. The RLWE layer
 	// will automatically detect the 3N structure and use the appropriate NTT.
 
 	// Since RLWE expects LogN but we have actual N, we need to compute
 	// the equivalent LogN that gives us at least N coefficients
-	logN := 0
-	n := p.N
-	for (1 << logN) < n {
-		logN++
-	}
+
+	// logN := 0// The code snippet you provided is calculating the log base 2 of the ring degree `N` in
+	// order to determine the appropriate value for the `LogN` parameter.
 
 	// However, for 3N rings, we should try to use the N value directly
 	// by setting appropriate LogNthRoot to indicate 3N structure
-	return rlwe.ParametersLiteral{
-		LogN:         logN, // Power-of-2 that accommodates our N
-		LogNthRoot:   0,    // Will be set automatically by Ring construction
+	return rlwe.ParametersLiteral3N{
+		Order2:       p.Order2, // Power-of-2 that accommodates our N
+		Order3:       p.Order3, // Power-of-2 that accommodates our N
+		NthRoot:      1,        // Will be set automatically by Ring construction
 		Q:            p.Q,
 		P:            p.P,
 		LogQ:         p.LogQ,
@@ -90,75 +90,35 @@ func (p ParametersLiteral) GetRLWEParametersLiteral() rlwe.ParametersLiteral {
 
 // Parameters represents a parameter set for the Matrix CKKS cryptosystem. Its fields are private and
 // immutable. See [ParametersLiteral] for user-specified parameters.
-type Parameters struct {
-	rlwe.Parameters
-	n     int        // The actual ring degree N = 2^a * 3^b
-	ringQ *ring.Ring // Direct 3N ring for Q
-	ringP *ring.Ring // Direct 3N ring for P (if needed)
-}
-
-// N returns the ring degree N = 2^a * 3^b.
-func (p Parameters) N() int {
-	return p.n
-}
-
-// RingQ returns the ring Q with 3N structure
-func (p Parameters) RingQ() *ring.Ring {
-	if p.ringQ != nil {
-		return p.ringQ
-	}
-	return p.Parameters.RingQ() // Fallback to RLWE ring
-}
-
-// RingP returns the ring P with 3N structure
-func (p Parameters) RingP() *ring.Ring {
-	if p.ringP != nil {
-		return p.ringP
-	}
-	return p.Parameters.RingP() // Fallback to RLWE ring
-}
-
-// LogN returns the log2 of N (this is approximate for 3N rings).
-func (p Parameters) LogN() int {
-	return p.Parameters.LogN()
+type Parameters3N struct {
+	rlwe.Parameters3N
 }
 
 // MaxDimensions returns the maximum dimension of the matrix that can be SIMD packed in a single plaintext polynomial.
 // TODO: Catch ring.Matrix case
-func (p Parameters) MaxDimensions() ring.Dimensions {
+func (p Parameters3N) MaxDimensions() ring.Dimensions {
 	switch p.RingType() {
-	case ring.Standard:
-		return ring.Dimensions{Rows: 1, Cols: p.N() >> 1}
-	case ring.ConjugateInvariant:
-		return ring.Dimensions{Rows: 1, Cols: p.N()}
-	default:
-		// Sanity check
-		panic("cannot MaxDimensions: invalid ring type")
-	}
-}
+	case ring.Matrix:
+		power3 := 1
+		for i := 0; i < p.Order3(); i++ {
+			power3 *= 3
+		}
+		return ring.Dimensions{Rows: p.Order2() >> 2, Cols: power3 << 1}
 
-// LogMaxDimensions returns the log2 of maximum dimension of the matrix that can be SIMD packed in a single plaintext polynomial.
-func (p Parameters) LogMaxDimensions() ring.Dimensions {
-	switch p.RingType() {
-	case ring.Standard:
-		return ring.Dimensions{Rows: 0, Cols: p.LogN() - 1}
-	case ring.ConjugateInvariant:
-		return ring.Dimensions{Rows: 0, Cols: p.LogN()}
 	default:
-		// Sanity check
-		panic("cannot LogMaxDimensions: invalid ring type")
+		panic("cannot MaxDimensions: invalid ring type")
 	}
 }
 
 // MaxSlots returns the total number of entries (slots) that a plaintext can store.
 // This value is obtained by multiplying all dimensions from MaxDimensions.
-func (p Parameters) MaxSlots() int {
+func (p Parameters3N) MaxSlots() int {
 	dims := p.MaxDimensions()
 	return dims.Rows * dims.Cols
 }
 
 // MaxLevel returns the maximum ciphertext level
-func (p Parameters) MaxLevel() int {
+func (p Parameters3N) MaxLevel() int {
 	return p.QCount() - 1
 }
 
@@ -168,14 +128,14 @@ func (p Parameters) MaxLevel() int {
 // The main validation is that N must be of the form 2^a * 3^b and we create 3N rings directly.
 //
 // See [rlwe.NewParametersFromLiteral] for default values of the other optional fields.
-func NewParametersFromLiteral(pl ParametersLiteral) (Parameters, error) {
+func NewParametersFromLiteral3N(pl ParametersLiteral3N) (Parameters3N, error) {
 	// Validate that N is of form 2^a * 3^b
 	if !isValid3NForm(pl.N) {
-		return Parameters{}, fmt.Errorf("N=%d must be of form 2^a * 3^b", pl.N)
+		return Parameters3N{}, fmt.Errorf("N=%d must be of form 2^a * 3^b", pl.N)
 	}
 
 	// Create the underlying RLWE parameters (this will use power-of-2 rings)
-	rlweParams, err := rlwe.NewParametersFromLiteral(pl.GetRLWEParametersLiteral())
+	rlweParams, err := rlwe.NewParametersFromLiteral(pl.GetRLWEParametersLiteral3N())
 	if err != nil {
 		return Parameters{}, fmt.Errorf("cannot NewParametersFromLiteral: %w", err)
 	}

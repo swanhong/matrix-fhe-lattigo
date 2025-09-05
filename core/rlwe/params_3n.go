@@ -17,43 +17,21 @@ import (
 	"github.com/tuneinsight/lattigo/v6/utils/buffer"
 )
 
-// MaxLogN is the log2 of the largest supported polynomial modulus degree.
-const MaxLogN = 20
-
-// MinLogN is the log2 of the smallest supported polynomial modulus degree (needed to ensure the NTT correctness).
-const MinLogN = 4
-
-// MaxModuliSize is the largest bit-length supported for the moduli in the RNS representation.
-const MaxModuliSize = 60
-
 // GaloisGen is an integer of order N=2^d modulo M=2N and that spans Z_M with the integer -1.
-// The j-th ring automorphism takes the root zeta to zeta^(5^j).
-const GaloisGen uint64 = ring.GaloisGen
+// The j-th ring automorphism takes the root zeta to zeta^(5j).
+const GaloisGen2 uint64 = ring.GaloisGen
+const GaloisGen3 uint64 = 2
 
-type DistributionLiteral interface{}
+type DistributionLiteral3N interface{}
 
-type ParameterProvider interface {
-	GetRLWEParameters() *Parameters
+type ParameterProvider3N interface {
+	GetRLWEParameters3N() *Parameters3N
 }
 
-// ParametersLiteral is a literal representation of RLWE parameters. It has public fields and
-// is used to express unchecked user-defined parameters literally into Go programs.
-// The [NewParametersFromLiteral] function is used to generate the actual checked parameters
-// from the literal representation.
-//
-// Users must set the polynomial degree (LogN) and the coefficient modulus, by either setting
-// the Q and P fields to the desired moduli chain, or by setting the LogQ and LogP fields to
-// the desired moduli sizes.
-//
-// Optionally, users may specify
-//   - the base 2 decomposition for the gadget ciphertexts
-//   - the error variance (Sigma) and secrets' density (H) and the ring type (RingType).
-//
-// If left unset, standard default values for these field are substituted at
-// parameter creation (see [NewParametersFromLiteral]).
-type ParametersLiteral struct {
-	LogN         int
-	LogNthRoot   int                         `json:",omitempty"`
+type ParametersLiteral3N struct {
+	Order2       int
+	Order3       int
+	NthRoot      int                         `json:",omitempty"`
 	Q            []uint64                    `json:",omitempty"`
 	P            []uint64                    `json:",omitempty"`
 	LogQ         []int                       `json:",omitempty"`
@@ -65,10 +43,9 @@ type ParametersLiteral struct {
 	NTTFlag      bool                        `json:",omitempty"`
 }
 
-// Parameters represents a set of generic RLWE parameters. Its fields are private and
-// immutable. See [ParametersLiteral] for user-specified parameters.
-type Parameters struct {
-	logN         int
+type Parameters3N struct {
+	order2       int
+	order3       int
 	qi           []uint64
 	pi           []uint64
 	xe           Distribution
@@ -80,22 +57,17 @@ type Parameters struct {
 	nttFlag      bool
 }
 
-// NewParameters returns a new set of generic RLWE parameters from the given ring degree logn, moduli q and p, and
-// error distribution Xs (secret) and Xe (error). It returns the empty parameters [Parameters]{} and a non-nil error if the
-// specified parameters are invalid.
-func NewParameters(logn int, q, p []uint64, xs, xe DistributionLiteral, ringType ring.Type, defaultScale Scale, NTTFlag bool) (params Parameters, err error) {
+// CUSTOM
+func NewParameters3N(order2_ int, order3_ int, q, p []uint64, xs, xe DistributionLiteral, ringType ring.Type, defaultScale Scale, NTTFlag bool) (params Parameters3N, err error) {
 
 	var lenP int
 	if p != nil {
 		lenP = len(p)
 	}
 
-	if err = checkSizeParams(logn); err != nil {
-		return Parameters{}, err
-	}
-
-	params = Parameters{
-		logN:         logn,
+	params = Parameters3N{
+		order2:       order2_,
+		order3:       order3_,
 		qi:           make([]uint64, len(q)),
 		pi:           make([]uint64, lenP),
 		ringType:     ringType,
@@ -106,7 +78,7 @@ func NewParameters(logn int, q, p []uint64, xs, xe DistributionLiteral, ringType
 	// pre-check that moduli chain is of valid size and that all factors are prime.
 	// note: the Ring instantiation checks that the moduli are valid NTT-friendly primes.
 	if err = CheckModuli(q, p); err != nil {
-		return Parameters{}, err
+		return Parameters3N{}, err
 	}
 
 	copy(params.qi, q)
@@ -115,22 +87,22 @@ func NewParameters(logn int, q, p []uint64, xs, xe DistributionLiteral, ringType
 		copy(params.pi, p)
 	}
 
-	if err = params.initRings(); err != nil {
-		return Parameters{}, fmt.Errorf("cannot NewParameters: %w", err)
+	if err = params.initRings3N(); err != nil {
+		return Parameters3N{}, fmt.Errorf("cannot NewParameters: %w", err)
 	}
 
 	switch xs := xs.(type) {
 	case ring.Ternary, ring.DiscreteGaussian:
-		params.xs = NewDistribution(xs.(ring.DistributionParameters), logn)
+		params.xs = NewDistribution3N(xs.(ring.DistributionParameters), order2_, order3_)
 	default:
-		return Parameters{}, fmt.Errorf("secret distribution type must be Ternary or DiscretGaussian but is %T", xs)
+		return Parameters3N{}, fmt.Errorf("secret distribution type must be Ternary or DiscretGaussian but is %T", xs)
 	}
 
 	switch xe := xe.(type) {
 	case ring.Ternary, ring.DiscreteGaussian:
-		params.xe = NewDistribution(xe.(ring.DistributionParameters), logn)
+		params.xe = NewDistribution3N(xe.(ring.DistributionParameters), order2_, order3_)
 	default:
-		return Parameters{}, fmt.Errorf("error distribution type must be Ternary or DiscretGaussian but is %T", xe)
+		return Parameters3N{}, fmt.Errorf("error distribution type must be Ternary or DiscretGaussian but is %T", xe)
 	}
 
 	var warning error
@@ -149,19 +121,7 @@ func NewParameters(logn int, q, p []uint64, xs, xe DistributionLiteral, ringType
 	return params, warning
 }
 
-// NewParametersFromLiteral instantiate a set of generic RLWE parameters from a [ParametersLiteral] specification.
-// It returns the empty parameters Parameters{} and a non-nil error if the specified parameters are invalid.
-//
-// If the moduli chain is specified through the LogQ and LogP fields, the method generates a moduli chain matching
-// the specified sizes (see [GenModuli]).
-//
-// If the secrets' density parameter (H) is left unset, its value is set to 2^(paramDef.LogN-1) to match
-// the standard ternary distribution.
-//
-// If the error variance is left unset, its value is set to [DefaultError].
-//
-// If the RingType is left unset, the default value is ring.Standard.
-func NewParametersFromLiteral(paramDef ParametersLiteral) (params Parameters, err error) {
+func NewParametersFromLiteral3N(paramDef ParametersLiteral3N) (params Parameters3N, err error) {
 
 	if paramDef.Xs == nil {
 		paramDef.Xs = DefaultXs
@@ -180,13 +140,13 @@ func NewParametersFromLiteral(paramDef ParametersLiteral) (params Parameters, er
 
 	// Invalid moduli configurations: do not allow empty Q and LogQ as well double-set log and non-log fields.
 	if paramDef.Q == nil && paramDef.LogQ == nil {
-		return Parameters{}, fmt.Errorf("rlwe.NewParametersFromLiteral: both Q and LogQ fields are empty")
+		return Parameters3N{}, fmt.Errorf("rlwe.NewParametersFromLiteral: both Q and LogQ fields are empty")
 	}
 	if paramDef.Q != nil && paramDef.LogQ != nil {
-		return Parameters{}, fmt.Errorf("rlwe.NewParametersFromLiteral: both Q and LogQ fields are set")
+		return Parameters3N{}, fmt.Errorf("rlwe.NewParametersFromLiteral: both Q and LogQ fields are set")
 	}
 	if paramDef.P != nil && paramDef.LogP != nil {
-		return Parameters{}, fmt.Errorf("rlwe.NewParametersFromLiteral: both P and LogP fields are set")
+		return Parameters3N{}, fmt.Errorf("rlwe.NewParametersFromLiteral: both P and LogP fields are set")
 	}
 
 	var (
@@ -198,17 +158,16 @@ func NewParametersFromLiteral(paramDef ParametersLiteral) (params Parameters, er
 	// Note that GenModuli returns nil for Q if logQ == nil, and nil for P if logP == nil.
 	if paramDef.LogQ != nil || paramDef.LogP != nil {
 		switch paramDef.RingType {
-		case ring.Standard:
-			LogNthRoot := utils.Max(paramDef.LogN+1, paramDef.LogNthRoot)
-			q, p, err = GenModuli(LogNthRoot, paramDef.LogQ, paramDef.LogP) //2NthRoot
-			if err != nil {
-				return Parameters{}, fmt.Errorf("rlwe.NewParametersFromLiteral: unable to generate standard ring moduli: %w", err)
+		case ring.Matrix:
+			N := 1 << uint(paramDef.Order2)        // 2^order2
+			for i := 0; i < paramDef.Order3; i++ { // 3^order3
+				N *= 3
 			}
-		case ring.ConjugateInvariant:
-			LogNthRoot := utils.Max(paramDef.LogN+2, paramDef.LogNthRoot)
-			q, p, err = GenModuli(LogNthRoot, paramDef.LogQ, paramDef.LogP) //4NthRoot
+			NthRoot := 3 * N
+
+			q, p, err = GenModuli3N(NthRoot, paramDef.LogQ, paramDef.LogP) //3NthRoot
 			if err != nil {
-				return Parameters{}, fmt.Errorf("rlwe.NewParametersFromLiteral: unable to generate conjugate invariant ring moduli: %w", err)
+				return Parameters3N{}, fmt.Errorf("rlwe.NewParametersFromLiteral: unable to generate standard ring moduli: %w", err)
 			}
 		}
 	}
@@ -219,22 +178,14 @@ func NewParametersFromLiteral(paramDef ParametersLiteral) (params Parameters, er
 	if p == nil {
 		p = paramDef.P
 	}
-	return NewParameters(paramDef.LogN, q, p, paramDef.Xs, paramDef.Xe, paramDef.RingType, paramDef.DefaultScale, paramDef.NTTFlag)
+	return NewParameters3N(paramDef.Order2, paramDef.Order3, q, p, paramDef.Xs, paramDef.Xe, paramDef.RingType, paramDef.DefaultScale, paramDef.NTTFlag)
 }
 
-// StandardParameters returns a RLWE parameter set that corresponds to the
-// standard dual of a conjugate invariant parameter set. If the receiver is already
-// a standard set, then the method returns the receiver.
-func (p Parameters) StandardParameters() (pci Parameters, err error) {
+func (p Parameters3N) StandardParameters3N() (pci Parameters3N, err error) {
 
 	switch p.ringType {
-	case ring.Standard:
+	case ring.Matrix:
 		return p, nil
-	case ring.ConjugateInvariant:
-		pci = p
-		pci.logN = p.logN + 1
-		pci.ringType = ring.Standard
-		err = pci.initRings()
 	default:
 		err = fmt.Errorf("invalid ring type")
 	}
@@ -243,7 +194,7 @@ func (p Parameters) StandardParameters() (pci Parameters, err error) {
 }
 
 // ParametersLiteral returns the ParametersLiteral of the target Parameters.
-func (p Parameters) ParametersLiteral() ParametersLiteral {
+func (p Parameters3N) ParametersLiteral3N() ParametersLiteral3N {
 
 	Q := make([]uint64, len(p.qi))
 	copy(Q, p.qi)
@@ -251,8 +202,9 @@ func (p Parameters) ParametersLiteral() ParametersLiteral {
 	P := make([]uint64, len(p.pi))
 	copy(P, p.pi)
 
-	return ParametersLiteral{
-		LogN:         p.logN,
+	return ParametersLiteral3N{
+		Order2:       p.order2,
+		Order3:       p.order3,
 		Q:            Q,
 		P:            P,
 		Xe:           p.xe.DistributionParameters,
@@ -264,29 +216,44 @@ func (p Parameters) ParametersLiteral() ParametersLiteral {
 }
 
 // GetRLWEParameters returns a pointer to the underlying RLWE parameters.
-func (p Parameters) GetRLWEParameters() *Parameters {
+func (p Parameters3N) GetRLWEParameters3N() *Parameters3N {
 	return &p
 }
 
 // NewScale creates a new scale using the stored default scale as template.
-func (p Parameters) NewScale(scale interface{}) Scale {
+func (p Parameters3N) NewScale3N(scale interface{}) Scale {
+	newScale := NewScale(scale)
+	newScale.Mod = p.defaultScale.Mod
+	return newScale
+}
+
+// NewScale creates a new scale using the stored default scale as template.
+func (p Parameters3N) NewScale(scale interface{}) Scale {
 	newScale := NewScale(scale)
 	newScale.Mod = p.defaultScale.Mod
 	return newScale
 }
 
 // N returns the ring degree
-func (p Parameters) N() int {
-	return 1 << p.logN
+func (p Parameters3N) N() int {
+
+	ringDim := 1 << uint(p.order2)  // 2^order2
+	for i := 0; i < p.order3; i++ { // 3^order3
+		ringDim *= 3
+	}
+	return ringDim
 }
 
-// LogN returns the log of the degree of the polynomial ring
-func (p Parameters) LogN() int {
-	return p.logN
+func (p Parameters3N) Order2() int {
+	return p.order2
+}
+
+func (p Parameters3N) Order3() int {
+	return p.order3
 }
 
 // NthRoot returns the NthRoot of the ring.
-func (p Parameters) NthRoot() int {
+func (p Parameters3N) NthRoot() int {
 	if p.RingQ() != nil {
 		/* #nosec G115 -- NthRoot of valid [ring.Ring] is positive */
 		return int(p.RingQ().NthRoot())
@@ -295,44 +262,38 @@ func (p Parameters) NthRoot() int {
 	return 0
 }
 
-// LogNthRoot returns the log2(NthRoot) of the ring.
-func (p Parameters) LogNthRoot() int {
-	/* #nosec G115 -- NthRoot is ensured to be greater than 0 */
-	return bits.Len64(uint64(p.NthRoot() - 1))
-}
-
 // DefaultScale returns the default scaling factor of the plaintext, if any.
-func (p Parameters) DefaultScale() Scale {
+func (p Parameters3N) DefaultScale() Scale {
 	return p.defaultScale
 }
 
 // RingQ returns a pointer to ringQ
-func (p Parameters) RingQ() *ring.Ring {
+func (p Parameters3N) RingQ() *ring.Ring {
 	return p.ringQ
 }
 
 // RingP returns a pointer to ringP
-func (p Parameters) RingP() *ring.Ring {
+func (p Parameters3N) RingP() *ring.Ring {
 	return p.ringP
 }
 
 // RingQP returns a pointer to ringQP
-func (p Parameters) RingQP() *ringqp.Ring {
+func (p Parameters3N) RingQP() *ringqp.Ring {
 	return &ringqp.Ring{RingQ: p.ringQ, RingP: p.ringP}
 }
 
 // NTTFlag returns a boolean indicating if elements are stored by default in the NTT domain.
-func (p Parameters) NTTFlag() bool {
+func (p Parameters3N) NTTFlag() bool {
 	return p.nttFlag
 }
 
 // Xs returns the Distribution of the secret
-func (p Parameters) Xs() ring.DistributionParameters {
+func (p Parameters3N) Xs() ring.DistributionParameters {
 	return p.xs.DistributionParameters
 }
 
 // XsHammingWeight returns the expected Hamming weight of the secret.
-func (p Parameters) XsHammingWeight() int {
+func (p Parameters3N) XsHammingWeight() int {
 	switch xs := p.xs.DistributionParameters.(type) {
 	case ring.Ternary:
 		if xs.H != 0 {
@@ -348,18 +309,18 @@ func (p Parameters) XsHammingWeight() int {
 }
 
 // Xe returns Distribution of the error
-func (p Parameters) Xe() ring.DistributionParameters {
+func (p Parameters3N) Xe() ring.DistributionParameters {
 	return p.xe.DistributionParameters
 }
 
 // NoiseBound returns truncation bound for the error distribution.
-func (p Parameters) NoiseBound() float64 {
+func (p Parameters3N) NoiseBound() float64 {
 	return p.xe.AbsBound
 }
 
 // NoiseFreshPK returns the standard deviation
 // of a fresh encryption with the public key.
-func (p Parameters) NoiseFreshPK() (std float64) {
+func (p Parameters3N) NoiseFreshPK() (std float64) {
 
 	std = float64(p.XsHammingWeight() + 1)
 
@@ -370,53 +331,49 @@ func (p Parameters) NoiseFreshPK() (std float64) {
 		std *= sigma * sigma
 	}
 
-	if p.RingType() == ring.ConjugateInvariant {
-		std *= 2
-	}
-
 	return math.Sqrt(std)
 }
 
 // NoiseFreshSK returns the standard deviation
 // of a fresh encryption with the secret key.
-func (p Parameters) NoiseFreshSK() (std float64) {
+func (p Parameters3N) NoiseFreshSK() (std float64) {
 	return p.xe.Std
 }
 
 // RingType returns the type of the underlying ring.
-func (p Parameters) RingType() ring.Type {
+func (p Parameters3N) RingType() ring.Type {
 	return p.ringType
 }
 
 // MaxLevel returns the maximum level of a ciphertext.
-func (p Parameters) MaxLevel() int {
+func (p Parameters3N) MaxLevel() int {
 	return p.MaxLevelQ()
 }
 
 // MaxLevelQ returns the maximum level of the modulus Q.
-func (p Parameters) MaxLevelQ() int {
+func (p Parameters3N) MaxLevelQ() int {
 	return p.QCount() - 1
 }
 
 // MaxLevelP returns the maximum level of the modulus P.
-func (p Parameters) MaxLevelP() int {
+func (p Parameters3N) MaxLevelP() int {
 	return p.PCount() - 1
 }
 
 // Q returns a new slice with the factors of the ciphertext modulus q
-func (p Parameters) Q() []uint64 {
+func (p Parameters3N) Q() []uint64 {
 	qi := make([]uint64, len(p.qi))
 	copy(qi, p.qi)
 	return qi
 }
 
 // QCount returns the number of factors of the ciphertext modulus Q
-func (p Parameters) QCount() int {
+func (p Parameters3N) QCount() int {
 	return len(p.qi)
 }
 
 // QBigInt return the ciphertext-space modulus Q in big.Integer, reconstructed, representation.
-func (p Parameters) QBigInt() *big.Int {
+func (p Parameters3N) QBigInt() *big.Int {
 	q := big.NewInt(1)
 	for _, qi := range p.qi {
 		q.Mul(q, new(big.Int).SetUint64(qi))
@@ -425,19 +382,19 @@ func (p Parameters) QBigInt() *big.Int {
 }
 
 // P returns a new slice with the factors of the ciphertext modulus extension P
-func (p Parameters) P() []uint64 {
+func (p Parameters3N) P() []uint64 {
 	pi := make([]uint64, len(p.pi))
 	copy(pi, p.pi)
 	return pi
 }
 
 // PCount returns the number of factors of the ciphertext modulus extension P
-func (p Parameters) PCount() int {
+func (p Parameters3N) PCount() int {
 	return len(p.pi)
 }
 
 // PBigInt return the ciphertext-space extension modulus P in big.Integer, reconstructed, representation.
-func (p Parameters) PBigInt() *big.Int {
+func (p Parameters3N) PBigInt() *big.Int {
 	pInt := big.NewInt(1)
 	for _, pi := range p.pi {
 		pInt.Mul(pInt, new(big.Int).SetUint64(pi))
@@ -446,7 +403,7 @@ func (p Parameters) PBigInt() *big.Int {
 }
 
 // QP return the extended ciphertext-space modulus QP in RNS representation.
-func (p Parameters) QP() []uint64 {
+func (p Parameters3N) QP() []uint64 {
 	qp := make([]uint64, len(p.qi)+len(p.pi))
 	copy(qp, p.qi)
 	copy(qp[len(p.qi):], p.pi)
@@ -454,24 +411,24 @@ func (p Parameters) QP() []uint64 {
 }
 
 // QPCount returns the number of factors of the ciphertext modulus + the modulus extension P
-func (p Parameters) QPCount() int {
+func (p Parameters3N) QPCount() int {
 	return len(p.qi) + len(p.pi)
 }
 
 // QPBigInt return the extended ciphertext-space modulus QP in big.Integer, reconstructed, representation.
-func (p Parameters) QPBigInt() *big.Int {
+func (p Parameters3N) QPBigInt() *big.Int {
 	pqInt := p.QBigInt()
 	pqInt.Mul(pqInt, p.PBigInt())
 	return pqInt
 }
 
 // LogQ returns the size of the extended modulus Q in bits
-func (p Parameters) LogQ() (logq float64) {
+func (p Parameters3N) LogQ() (logq float64) {
 	return p.ringQ.LogModuli()
 }
 
 // LogQi returns round(log2) of each primes of the modulus Q.
-func (p Parameters) LogQi() (logqi []int) {
+func (p Parameters3N) LogQi() (logqi []int) {
 	qi := p.Q()
 	logqi = make([]int, len(qi))
 	for i := range qi {
@@ -481,7 +438,7 @@ func (p Parameters) LogQi() (logqi []int) {
 }
 
 // LogP returns the size of the extended modulus P in bits
-func (p Parameters) LogP() (logp float64) {
+func (p Parameters3N) LogP() (logp float64) {
 	if p.ringP == nil {
 		return 0
 	}
@@ -489,7 +446,7 @@ func (p Parameters) LogP() (logp float64) {
 }
 
 // LogPi returns the round(log2) of each primes of the modulus P.
-func (p Parameters) LogPi() (logpi []int) {
+func (p Parameters3N) LogPi() (logpi []int) {
 	pi := p.P()
 	logpi = make([]int, len(pi))
 	for i := range pi {
@@ -499,12 +456,12 @@ func (p Parameters) LogPi() (logpi []int) {
 }
 
 // LogQP returns the size of the extended modulus QP in bits
-func (p Parameters) LogQP() (logqp float64) {
+func (p Parameters3N) LogQP() (logqp float64) {
 	return p.LogQ() + p.LogP()
 }
 
 // MaxBit returns max(max(bitLen(Q[:levelQ+1])), max(bitLen(P[:levelP+1])).
-func (p Parameters) MaxBit(levelQ, levelP int) (c int) {
+func (p Parameters3N) MaxBit(levelQ, levelP int) (c int) {
 	for _, qi := range p.Q()[:levelQ+1] {
 		c = utils.Max(c, bits.Len64(qi))
 	}
@@ -520,7 +477,7 @@ func (p Parameters) MaxBit(levelQ, levelP int) (c int) {
 
 // BaseTwoDecompositionVectorSize returns ceil(bits(qi))/Base2Decomposition for each qi.
 // If levelP > 0 or Base2Decomposition == 0, then returns 1 for all qi.
-func (p Parameters) BaseTwoDecompositionVectorSize(levelQ, levelP, Base2Decomposition int) (base []int) {
+func (p Parameters3N) BaseTwoDecompositionVectorSize(levelQ, levelP, Base2Decomposition int) (base []int) {
 
 	logqi := p.LogQi()
 
@@ -540,7 +497,7 @@ func (p Parameters) BaseTwoDecompositionVectorSize(levelQ, levelP, Base2Decompos
 }
 
 // BaseRNSDecompositionVectorSize returns the number of element in the RNS decomposition basis: Ceil(lenQi / lenPi)
-func (p Parameters) BaseRNSDecompositionVectorSize(levelQ, levelP int) int {
+func (p Parameters3N) BaseRNSDecompositionVectorSize(levelQ, levelP int) int {
 
 	if levelP == -1 {
 		return levelQ + 1
@@ -551,7 +508,7 @@ func (p Parameters) BaseRNSDecompositionVectorSize(levelQ, levelP int) int {
 
 // QiOverflowMargin returns floor(2^64 / max(Qi)), i.e. the number of times elements of Z_max{Qi} can
 // be added together before overflowing 2^64. The function returns -1 if the moduli array is empty.
-func (p Parameters) QiOverflowMargin(level int) int {
+func (p Parameters3N) QiOverflowMargin(level int) int {
 	if len(p.qi) == 0 {
 		return -1
 	}
@@ -560,7 +517,7 @@ func (p Parameters) QiOverflowMargin(level int) int {
 
 // PiOverflowMargin returns floor(2^64 / max(Pi)), i.e. the number of times elements of Z_max{Pi} can
 // be added together before overflowing 2^64. The function returns -1 if the moduli array is empty.
-func (p Parameters) PiOverflowMargin(level int) int {
+func (p Parameters3N) PiOverflowMargin(level int) int {
 	if len(p.pi) == 0 {
 		return -1
 	}
@@ -568,7 +525,7 @@ func (p Parameters) PiOverflowMargin(level int) int {
 }
 
 // GaloisElements takes a list of integers k and returns the list [GaloisGen^{k[i]} mod NthRoot, ...].
-func (p Parameters) GaloisElements(k []int) (galEls []uint64) {
+func (p Parameters3N) GaloisElements(k []int) (galEls []uint64) {
 	galEls = make([]uint64, len(k))
 	for i, ki := range k {
 		galEls[i] = p.GaloisElement(ki)
@@ -577,19 +534,19 @@ func (p Parameters) GaloisElements(k []int) (galEls []uint64) {
 }
 
 // GaloisElement takes an integer k and returns GaloisGen^{k} mod NthRoot.
-func (p Parameters) GaloisElement(k int) uint64 {
+func (p Parameters3N) GaloisElement(k int) uint64 {
 	/* #nosec G115 -- implicit reduction modulo 2^64 */
 	return ring.ModExp(GaloisGen, uint64(k)&(p.ringQ.NthRoot()-1), p.ringQ.NthRoot())
 }
 
 // ModInvGaloisElement takes a Galois element of the form GaloisGen^{k} mod NthRoot
 // and returns GaloisGen^{-k} mod NthRoot.
-func (p Parameters) ModInvGaloisElement(galEl uint64) uint64 {
+func (p Parameters3N) ModInvGaloisElement(galEl uint64) uint64 {
 	return ring.ModExp(galEl, p.ringQ.NthRoot()-1, p.ringQ.NthRoot())
 }
 
 // GaloisElementOrderTwoOrthogonalSubgroup returns GaloisGen^{-1} mod NthRoot
-func (p Parameters) GaloisElementOrderTwoOrthogonalSubgroup() uint64 {
+func (p Parameters3N) GaloisElementOrderTwoOrthogonalSubgroup() uint64 {
 	if p.ringType == ring.ConjugateInvariant {
 		panic("Cannot generate GaloisElementInverse if ringType is ConjugateInvariant")
 	}
@@ -597,7 +554,7 @@ func (p Parameters) GaloisElementOrderTwoOrthogonalSubgroup() uint64 {
 }
 
 // SolveDiscreteLogGaloisElement takes a Galois element of the form GaloisGen^{k} mod NthRoot and returns k.
-func (p Parameters) SolveDiscreteLogGaloisElement(galEl uint64) (k int) {
+func (p Parameters3N) SolveDiscreteLogGaloisElement(galEl uint64) (k int) {
 
 	N := p.ringQ.NthRoot()
 
@@ -622,8 +579,9 @@ func (p Parameters) SolveDiscreteLogGaloisElement(galEl uint64) (k int) {
 }
 
 // Equal checks two Parameter structs for equality.
-func (p Parameters) Equal(other *Parameters) (res bool) {
-	res = p.logN == other.logN
+func (p Parameters3N) Equal(other *Parameters3N) (res bool) {
+	res = p.order2 == other.order2
+	res = res && p.order3 == other.order3
 	res = res && (p.xs.DistributionParameters == other.xs.DistributionParameters)
 	res = res && (p.xe.DistributionParameters == other.xe.DistributionParameters)
 	res = res && cmp.Equal(p.qi, other.qi)
@@ -636,36 +594,36 @@ func (p Parameters) Equal(other *Parameters) (res bool) {
 
 // MarshalBinary returns a []byte representation of the parameter set.
 // This representation corresponds to the [Parameters.MarshalJSON] representation.
-func (p Parameters) MarshalBinary() ([]byte, error) {
+func (p Parameters3N) MarshalBinary() ([]byte, error) {
 	buf := buffer.NewBufferSize(p.BinarySize())
 	_, err := p.WriteTo(buf)
 	return buf.Bytes(), err
 }
 
 // UnmarshalBinary decodes a slice of bytes on the target Parameters.
-func (p *Parameters) UnmarshalBinary(data []byte) (err error) {
+func (p *Parameters3N) UnmarshalBinary(data []byte) (err error) {
 	_, err = p.ReadFrom(buffer.NewBuffer(data))
 	return
 }
 
 // MarshalJSON returns a JSON representation of this parameter set. See Marshal from the [encoding/json] package.
-func (p Parameters) MarshalJSON() ([]byte, error) {
-	return json.Marshal(p.ParametersLiteral())
+func (p Parameters3N) MarshalJSON() ([]byte, error) {
+	return json.Marshal(p.ParametersLiteral3N())
 }
 
 // UnmarshalJSON reads a JSON representation of a parameter set into the receiver Parameter. See Unmarshal from the [encoding/json] package.
-func (p *Parameters) UnmarshalJSON(data []byte) (err error) {
-	var params ParametersLiteral
+func (p *Parameters3N) UnmarshalJSON(data []byte) (err error) {
+	var params ParametersLiteral3N
 	if err = json.Unmarshal(data, &params); err != nil {
 		return err
 	}
-	*p, err = NewParametersFromLiteral(params)
+	*p, err = NewParametersFromLiteral3N(params)
 	return
 }
 
 // WriteTo writes the object on an io.Writer. It implements the io.WriterTo
 // interface, and will write exactly object.BinarySize() bytes on w.
-func (p Parameters) WriteTo(w io.Writer) (n int64, err error) {
+func (p Parameters3N) WriteTo(w io.Writer) (n int64, err error) {
 	switch w := w.(type) {
 	case buffer.Writer:
 
@@ -702,7 +660,7 @@ func (p Parameters) WriteTo(w io.Writer) (n int64, err error) {
 //     first wrap io.Reader in a pre-allocated bufio.Reader.
 //   - When reading from a var b []byte, it is preferable to pass a buffer.NewBuffer(b)
 //     as w (see lattigo/utils/buffer/buffer.go).
-func (p *Parameters) ReadFrom(r io.Reader) (n int64, err error) {
+func (p *Parameters3N) ReadFrom(r io.Reader) (n int64, err error) {
 
 	switch r := r.(type) {
 	case buffer.Reader:
@@ -726,14 +684,14 @@ func (p *Parameters) ReadFrom(r io.Reader) (n int64, err error) {
 }
 
 // BinarySize returns size in bytes of the marshalled [Parameters] object.
-func (p Parameters) BinarySize() int {
+func (p Parameters3N) BinarySize() int {
 	// XXX: Byte size is hard to predict without marshalling.
 	b, _ := p.MarshalJSON()
 	return 4 + len(b)
 }
 
 // CheckModuli checks that the provided q and p correspond to a valid moduli chain.
-func CheckModuli(q, p []uint64) error {
+func CheckModuli3N(q, p []uint64) error {
 
 	for i, qi := range q {
 		/* #nosec G115 -- error is returned if integer overflow conversion */
@@ -769,7 +727,7 @@ func CheckModuli(q, p []uint64) error {
 
 // UnpackLevelParams is an internal function for unpacking level values
 // passed as variadic function parameters.
-func (p Parameters) UnpackLevelParams(args []int) (levelQ, levelP int) {
+func (p Parameters3N) UnpackLevelParams(args []int) (levelQ, levelP int) {
 	switch len(args) {
 	case 0:
 		return p.MaxLevelQ(), p.MaxLevelP()
@@ -780,35 +738,8 @@ func (p Parameters) UnpackLevelParams(args []int) (levelQ, levelP int) {
 	}
 }
 
-func checkSizeParams(logN int) error {
-	if logN > MaxLogN {
-		return fmt.Errorf("logN=%d is larger than MaxLogN=%d", logN, MaxLogN)
-	}
-	if logN < MinLogN {
-		return fmt.Errorf("logN=%d is smaller than MinLogN=%d", logN, MinLogN)
-	}
-	return nil
-}
-
-func checkModuliLogSize(logQ, logP []int) error {
-
-	for i, qi := range logQ {
-		if qi <= 0 || qi > MaxModuliSize {
-			return fmt.Errorf("logQ[%d]=%d is not in ]0, %d]", i, qi, MaxModuliSize)
-		}
-	}
-
-	for i, pi := range logP {
-		if pi <= 0 || pi > MaxModuliSize+1 {
-			return fmt.Errorf("logP[%d]=%d is not in ]0,%d]", i, pi, MaxModuliSize+1)
-		}
-	}
-
-	return nil
-}
-
 // GenModuli generates a valid moduli chain from the provided moduli sizes.
-func GenModuli(LogNthRoot int, logQ, logP []int) (q, p []uint64, err error) {
+func GenModuli3N(NthRoot int, logQ, logP []int) (q, p []uint64, err error) {
 
 	if err = checkSizeParams(logN); err != nil {
 		return
@@ -833,15 +764,15 @@ func GenModuli(LogNthRoot int, logQ, logP []int) (q, p []uint64, err error) {
 	for bitsize, value := range primesbitlen {
 
 		/* #nosec G115 -- bitsize cannot be negative */
-		g := ring.NewNTTFriendlyPrimesGenerator(uint64(bitsize), uint64(1<<LogNthRoot))
+		g := ring.NewNTTFriendlyPrimesGenerator(uint64(bitsize), uint64(NthRoot))
 
 		if bitsize == 61 {
 			if primes[bitsize], err = g.NextDownstreamPrimes(value); err != nil {
-				return q, p, fmt.Errorf("cannot GenModuli: failed to generate %d primes of bit-size=61 for LogNthRoot=%d: %w", value, LogNthRoot, err)
+				return q, p, fmt.Errorf("cannot GenModuli")
 			}
 		} else {
 			if primes[bitsize], err = g.NextAlternatingPrimes(value); err != nil {
-				return q, p, fmt.Errorf("cannot GenModuli: failed to generate %d primes of bit-size=%d for LogNthRoot=%d: %w", value, bitsize, LogNthRoot, err)
+				return q, p, fmt.Errorf("cannot GenModuli")
 			}
 		}
 	}
@@ -861,21 +792,28 @@ func GenModuli(LogNthRoot int, logQ, logP []int) (q, p []uint64, err error) {
 	return
 }
 
-func (p *Parameters) initRings() (err error) {
-	if p.ringQ, err = ring.NewRingFromType(1<<p.logN, p.qi, p.ringType); err != nil {
+func (p *Parameters3N) initRings3N() (err error) {
+
+	ringDim := 1 << uint(p.order2)
+	for i := 0; i < p.order3; i++ {
+		ringDim *= 3
+	}
+
+	if p.ringQ, err = ring.NewRingFromType(ringDim, p.qi, p.ringType); err != nil {
 		return fmt.Errorf("initRings/ringQ: %w", err)
 	}
 	if len(p.pi) != 0 {
-		if p.ringP, err = ring.NewRingFromType(1<<p.logN, p.pi, p.ringType); err != nil {
+		if p.ringP, err = ring.NewRingFromType(ringDim, p.pi, p.ringType); err != nil {
 			return fmt.Errorf("initRings/ringP: %w", err)
 		}
 	}
 	return
 }
 
-func (p *ParametersLiteral) UnmarshalJSON(b []byte) (err error) {
+func (p *ParametersLiteral3N) UnmarshalJSON(b []byte) (err error) {
 	var pl struct {
-		LogN         int
+		order2       int
+		order3       int
 		Q            []uint64
 		P            []uint64
 		LogQ         []int
@@ -892,7 +830,8 @@ func (p *ParametersLiteral) UnmarshalJSON(b []byte) (err error) {
 		return err
 	}
 
-	p.LogN = pl.LogN
+	p.Order2 = pl.order2
+	p.Order3 = pl.order3
 	p.Q, p.P, p.LogQ, p.LogP = pl.Q, pl.P, pl.LogQ, pl.LogP
 	if pl.Xs != nil {
 		p.Xs, err = ring.ParametersFromMap(pl.Xs)
