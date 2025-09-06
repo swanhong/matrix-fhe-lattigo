@@ -301,7 +301,7 @@ func NewRingFromType(N int, Moduli []uint64, ringType Type) (r *Ring, err error)
 		if !is3NRing {
 			return nil, fmt.Errorf("matrix ring type requires N to satisfy 3N = 2^a * 3^{b+1} condition, got N=%d", N)
 		}
-		return NewRingWithCustomNTT(N, Moduli, NewNumberTheoreticTransformer3N, 3*N)
+		return NewRingWithCustomNTT(N, Moduli, NewNumberTheoreticTransformer3N, N)
 	default:
 		return nil, fmt.Errorf("invalid ring type")
 	}
@@ -315,10 +315,10 @@ func NewRingWithCustomNTT(N int, ModuliChain []uint64, ntt func(*SubRing, int) N
 	r = new(Ring)
 
 	// Check if N is valid for power-of-2 or 3N rings
-	isPowerOf2 := N >= MinimumRingDegreeForLoopUnrolledOperations && (N&(N-1)) == 0
+	isorder2 := N >= MinimumRingDegreeForLoopUnrolledOperations && (N&(N-1)) == 0
 	is3NValid := isValidRingDegreeFor3N(N)
 
-	if !isPowerOf2 && !is3NValid {
+	if !isorder2 && !is3NValid {
 		return nil, fmt.Errorf("invalid ring degree: must be a power of 2 greater than %d or satisfy 3N = 2^a * 3^{b+1} condition", MinimumRingDegreeForLoopUnrolledOperations)
 	}
 

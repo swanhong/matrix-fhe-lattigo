@@ -9,7 +9,7 @@ import (
 // Evaluator wraps the underlying RLWE evaluator for matrix CKKS homomorphic operations.
 type Evaluator struct {
 	*rlwe.Evaluator
-	parameters Parameters
+	parameters *rlwe.Parameters3N
 }
 
 // NewEvaluator instantiates a new [Evaluator] for matrix CKKS.
@@ -19,9 +19,9 @@ type Evaluator struct {
 //   - evk: *[rlwe.EvaluationKeySet] (can be nil for addition/subtraction only)
 //
 // output: an [Evaluator] for performing homomorphic operations.
-func NewEvaluator(params Parameters, evk rlwe.EvaluationKeySet) *Evaluator {
+func NewEvaluator(params *rlwe.Parameters3N, evk rlwe.EvaluationKeySet) *Evaluator {
 	return &Evaluator{
-		Evaluator:  rlwe.NewEvaluator(params, evk),
+		Evaluator:  rlwe.NewEvaluator(params.GetRLWEParameters(), evk),
 		parameters: params,
 	}
 }

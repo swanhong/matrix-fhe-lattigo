@@ -74,10 +74,10 @@ func NewSubRing(N int, Modulus uint64) (s *SubRing, err error) {
 func NewSubRingWithCustomNTT(N int, Modulus uint64, ntt func(*SubRing, int) NumberTheoreticTransformer, NthRoot int) (s *SubRing, err error) {
 
 	// Checks if N is valid (either power of 2 OR 3N condition)
-	isPowerOf2 := N >= MinimumRingDegreeForLoopUnrolledOperations && (N&(N-1)) == 0
+	isorder2 := N >= MinimumRingDegreeForLoopUnrolledOperations && (N&(N-1)) == 0
 	is3NValid := isValidRingDegreeFor3N(N) && N >= MinimumRingDegreeForLoopUnrolledOperations
 
-	if !isPowerOf2 && !is3NValid {
+	if !isorder2 && !is3NValid {
 		return nil, fmt.Errorf("invalid ring degree: N=%d must be either a power of 2 greater than %d, or satisfy 3N = 2^a × 3^{b+1} condition", N, MinimumRingDegreeForLoopUnrolledOperations)
 	}
 

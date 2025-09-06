@@ -45,8 +45,8 @@ type ParameterProvider interface {
 // the Q and P fields to the desired moduli chain, or by setting the LogQ and LogP fields to
 // the desired moduli sizes.
 //
-// For 3N-friendly rings (like Matrix CKKS), users can specify PowerOf2 and PowerOf3 instead of LogN.
-// In this case, N = 2^PowerOf2 * 3^PowerOf3.
+// For 3N-friendly rings (like Matrix CKKS), users can specify order2 and order3 instead of LogN.
+// In this case, N = 2^order2 * 3^order3.
 //
 // Optionally, users may specify
 //   - the base 2 decomposition for the gadget ciphertexts
@@ -56,8 +56,8 @@ type ParameterProvider interface {
 // parameter creation (see [NewParametersFromLiteral]).
 type ParametersLiteral struct {
 	LogN         int                         `json:",omitempty"` // Standard power-of-2 ring degree (log2 of N)
-	PowerOf2     int                         `json:",omitempty"` // For 3N rings: 2-factor (a in N = 2^a * 3^b)
-	PowerOf3     int                         `json:",omitempty"` // For 3N rings: 3-factor (b in N = 2^a * 3^b)
+	order2       int                         `json:",omitempty"` // For 3N rings: 2-factor (a in N = 2^a * 3^b)
+	order3       int                         `json:",omitempty"` // For 3N rings: 3-factor (b in N = 2^a * 3^b)
 	LogNthRoot   int                         `json:",omitempty"`
 	Q            []uint64                    `json:",omitempty"`
 	P            []uint64                    `json:",omitempty"`
@@ -73,9 +73,9 @@ type ParametersLiteral struct {
 // Parameters represents a set of generic RLWE parameters. Its fields are private and
 // immutable. See [ParametersLiteral] for user-specified parameters.
 type Parameters struct {
-	logN         int    // For power-of-2 rings: log2(N)
-	powerOf2     int    // For 3N rings: 2-factor (a in N = 2^a * 3^b)
-	powerOf3     int    // For 3N rings: 3-factor (b in N = 2^a * 3^b)
+	logN         int // For power-of-2 rings: log2(N)
+	order2       int // For 3N rings: 2-factor (a in N = 2^a * 3^b)
+	order3       int // For 3N rings: 3-factor (b in N = 2^a * 3^b)
 	qi           []uint64
 	pi           []uint64
 	xe           Distribution
@@ -95,9 +95,9 @@ func NewParameters(logn int, q, p []uint64, xs, xe DistributionLiteral, ringType
 }
 
 // NewParametersFrom3N returns a new set of generic RLWE parameters supporting 3N rings (N = 2^a * 3^b).
-// If powerOf2 and powerOf3 are both 0, it uses standard power-of-2 rings with N = 2^logn.
-// If powerOf2 and powerOf3 are specified, it creates 3N rings with N = 2^powerOf2 * 3^powerOf3.
-func NewParametersFrom3N(logn, powerOf2, powerOf3 int, q, p []uint64, xs, xe DistributionLiteral, ringType ring.Type, defaultScale Scale, NTTFlag bool) (params Parameters, err error) {
+// If order2 and order3 are both 0, it uses standard power-of-2 rings with N = 2^logn.
+// If order2 and order3 are specified, it creates 3N rings with N = 2^order2 * 3^order3.
+func NewParametersFrom3N(logn, order2, order3 int, q, p []uint64, xs, xe DistributionLiteral, ringType ring.Type, defaultScale Scale, NTTFlag bool) (params Parameters, err error) {
 
 	var lenP int
 	if p != nil {
@@ -105,15 +105,15 @@ func NewParametersFrom3N(logn, powerOf2, powerOf3 int, q, p []uint64, xs, xe Dis
 	}
 
 	// Determine actual ring degree N and adjust logN if needed
-	if powerOf2 > 0 || powerOf3 > 0 {
-		// 3N ring: N = 2^powerOf2 * 3^powerOf3
-		actualN := (1 << powerOf2) * intPow(3, powerOf3)
+	if order2 > 0 || order3 > 0 {
+		// 3N ring: N = 2^order2 * 3^order3
+		actualN := (1 << order2) * intPow(3, order3)
 		// For compatibility, set logN to approximate log2(N)
 		if logn == 0 {
 			logn = int(math.Log2(float64(actualN)))
 		}
 		// Store the actual N for ring creation
-		_ = actualN // We'll use powerOf2/powerOf3 in ring creation
+		_ = actualN // We'll use order2/order3 in ring creation
 	}
 
 	if err = checkSizeParams(logn); err != nil {
@@ -122,8 +122,8 @@ func NewParametersFrom3N(logn, powerOf2, powerOf3 int, q, p []uint64, xs, xe Dis
 
 	params = Parameters{
 		logN:         logn,
-		powerOf2:     powerOf2,
-		powerOf3:     powerOf3,
+		order2:       order2,
+		order3:       order3,
 		qi:           make([]uint64, len(q)),
 		pi:           make([]uint64, lenP),
 		ringType:     ringType,
@@ -216,23 +216,23 @@ func NewParametersFromLiteral(paramDef ParametersLiteral) (params Parameters, er
 		paramDef.DefaultScale = s
 	}
 
-	// Check for 3N ring parameters (PowerOf2 and PowerOf3)
+	// Check for 3N ring parameters (order2 and order3)
 	var logN int
-	var powerOf2, powerOf3 int
-	
-	if paramDef.PowerOf2 > 0 || paramDef.PowerOf3 > 0 {
-		// 3N ring specified: N = 2^PowerOf2 * 3^PowerOf3
-		powerOf2 = paramDef.PowerOf2
-		powerOf3 = paramDef.PowerOf3
-		actualN := (1 << powerOf2) * intPow(3, powerOf3)
+	var order2, order3 int
+
+	if paramDef.order2 > 0 || paramDef.order3 > 0 {
+		// 3N ring specified: N = 2^order2 * 3^order3
+		order2 = paramDef.order2
+		order3 = paramDef.order3
+		actualN := (1 << order2) * intPow(3, order3)
 		logN = int(math.Log2(float64(actualN))) // Approximate logN for validation
 	} else if paramDef.LogN > 0 {
 		// Standard power-of-2 ring specified
 		logN = paramDef.LogN
-		powerOf2 = 0
-		powerOf3 = 0
+		order2 = 0
+		order3 = 0
 	} else {
-		return Parameters{}, fmt.Errorf("rlwe.NewParametersFromLiteral: must specify either LogN or PowerOf2/PowerOf3")
+		return Parameters{}, fmt.Errorf("rlwe.NewParametersFromLiteral: must specify either LogN or order2/order3")
 	}
 
 	// Invalid moduli configurations: do not allow empty Q and LogQ as well double-set log and non-log fields.
@@ -269,11 +269,11 @@ func NewParametersFromLiteral(paramDef ParametersLiteral) (params Parameters, er
 			}
 		case ring.Matrix:
 			// For Matrix rings (3N), we need special handling
-			if powerOf2 == 0 && powerOf3 == 0 {
-				return Parameters{}, fmt.Errorf("rlwe.NewParametersFromLiteral: Matrix ring type requires PowerOf2/PowerOf3 specification")
+			if order2 == 0 && order3 == 0 {
+				return Parameters{}, fmt.Errorf("rlwe.NewParametersFromLiteral: Matrix ring type requires order2/order3 specification")
 			}
 			// Generate 3N-friendly primes
-			actualN := (1 << powerOf2) * intPow(3, powerOf3)
+			actualN := (1 << order2) * intPow(3, order3)
 			q, p, err = Gen3NModuli(actualN, paramDef.LogQ, paramDef.LogP)
 			if err != nil {
 				return Parameters{}, fmt.Errorf("rlwe.NewParametersFromLiteral: unable to generate matrix ring moduli: %w", err)
@@ -287,9 +287,9 @@ func NewParametersFromLiteral(paramDef ParametersLiteral) (params Parameters, er
 	if p == nil {
 		p = paramDef.P
 	}
-	
+
 	// Use the new 3N-aware function
-	return NewParametersFrom3N(logN, powerOf2, powerOf3, q, p, paramDef.Xs, paramDef.Xe, paramDef.RingType, paramDef.DefaultScale, paramDef.NTTFlag)
+	return NewParametersFrom3N(logN, order2, order3, q, p, paramDef.Xs, paramDef.Xe, paramDef.RingType, paramDef.DefaultScale, paramDef.NTTFlag)
 }
 
 // StandardParameters returns a RLWE parameter set that corresponds to the
@@ -323,8 +323,8 @@ func (p Parameters) ParametersLiteral() ParametersLiteral {
 
 	return ParametersLiteral{
 		LogN:         p.logN,
-		PowerOf2:     p.powerOf2,
-		PowerOf3:     p.powerOf3,
+		order2:       p.order2,
+		order3:       p.order3,
 		Q:            Q,
 		P:            P,
 		Xe:           p.xe.DistributionParameters,
@@ -349,9 +349,9 @@ func (p Parameters) NewScale(scale interface{}) Scale {
 
 // N returns the ring degree
 func (p Parameters) N() int {
-	if p.powerOf2 > 0 || p.powerOf3 > 0 {
-		// 3N ring: N = 2^powerOf2 * 3^powerOf3
-		return (1 << p.powerOf2) * intPow(3, p.powerOf3)
+	if p.order2 > 0 || p.order3 > 0 {
+		// 3N ring: N = 2^order2 * 3^order3
+		return (1 << p.order2) * intPow(3, p.order3)
 	}
 	// Standard power-of-2 ring: N = 2^logN
 	return 1 << p.logN
@@ -362,19 +362,19 @@ func (p Parameters) LogN() int {
 	return p.logN
 }
 
-// PowerOf2 returns the 2-factor (a in N = 2^a * 3^b) for 3N rings, or 0 for standard rings
-func (p Parameters) PowerOf2() int {
-	return p.powerOf2
+// Order2 returns the 2-factor (a in N = 2^a * 3^b) for 3N rings, or 0 for standard rings
+func (p Parameters) Order2() int {
+	return p.order2
 }
 
-// PowerOf3 returns the 3-factor (b in N = 2^a * 3^b) for 3N rings, or 0 for standard rings
-func (p Parameters) PowerOf3() int {
-	return p.powerOf3
+// Order3 returns the 3-factor (b in N = 2^a * 3^b) for 3N rings, or 0 for standard rings
+func (p Parameters) Order3() int {
+	return p.order3
 }
 
 // Is3NRing returns true if this is a 3N ring (N = 2^a * 3^b with b > 0)
 func (p Parameters) Is3NRing() bool {
-	return p.powerOf3 > 0
+	return p.order3 > 0
 }
 
 // NthRoot returns the NthRoot of the ring.
@@ -993,7 +993,7 @@ func Gen3NModuli(N int, logQ, logP []int) (q, p []uint64, err error) {
 	for _, logp := range logP {
 		// Try multiple times to find a unique 3N-friendly prime
 		for attempt := 0; attempt < 100; attempt++ {
-			// Use a larger range and different starting points  
+			// Use a larger range and different starting points
 			startSeed := (1 << 20) + (attempt * 1000) + 50000 // Different seed for P
 			primes, err := ring.Find3NRNSPrimes(N, logp, 10, startSeed)
 			if err != nil {
@@ -1027,14 +1027,14 @@ func Gen3NModuli(N int, logQ, logP []int) (q, p []uint64, err error) {
 func (p *Parameters) initRings() (err error) {
 	// Determine ring degree N
 	var N int
-	if p.powerOf2 > 0 || p.powerOf3 > 0 {
-		// 3N ring: N = 2^powerOf2 * 3^powerOf3
-		N = (1 << p.powerOf2) * intPow(3, p.powerOf3)
+	if p.order2 > 0 || p.order3 > 0 {
+		// 3N ring: N = 2^order2 * 3^order3
+		N = (1 << p.order2) * intPow(3, p.order3)
 	} else {
 		// Standard power-of-2 ring: N = 2^logN
 		N = 1 << p.logN
 	}
-	
+
 	if p.ringQ, err = ring.NewRingFromType(N, p.qi, p.ringType); err != nil {
 		return fmt.Errorf("initRings/ringQ: %w", err)
 	}

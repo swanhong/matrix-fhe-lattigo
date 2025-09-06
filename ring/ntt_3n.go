@@ -86,6 +86,15 @@ func (ntt *NumberTheoreticTransformer3N) Forward(p1, p2 []uint64) {
 		panic(fmt.Sprintf("Forward: len(p1)=%d len(p2)=%d < N=%d", len(p1), len(p2), n))
 	}
 
+	// Check if this is an in-place operation (p1 and p2 are the same slice)
+	if &p1[0] == &p2[0] {
+		// In-place operation: use temporary buffer to avoid memory aliasing
+		tmp := make([]uint64, n)
+		ntt.Forward(p1, tmp)
+		copy(p2, tmp)
+		return
+	}
+
 	// Horner evaluation at each x_k
 	for k := 0; k < n; k++ {
 		xk := ntt.x[k]
@@ -111,6 +120,15 @@ func (ntt *NumberTheoreticTransformer3N) Backward(p1, p2 []uint64) {
 	q := ntt.q
 	if len(p1) < n || len(p2) < n {
 		panic(fmt.Sprintf("Backward: len(p1)=%d len(p2)=%d < N=%d", len(p1), len(p2), n))
+	}
+
+	// Check if this is an in-place operation (p1 and p2 are the same slice)
+	if &p1[0] == &p2[0] {
+		// In-place operation: use temporary buffer to avoid memory aliasing
+		tmp := make([]uint64, n)
+		ntt.Backward(p1, tmp)
+		copy(p2, tmp)
+		return
 	}
 
 	// Build Vandermonde V and RHS y

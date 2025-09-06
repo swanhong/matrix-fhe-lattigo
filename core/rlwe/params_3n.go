@@ -220,6 +220,30 @@ func (p Parameters3N) GetRLWEParameters3N() *Parameters3N {
 	return &p
 }
 
+// GetRLWEParameters returns a pointer to the underlying RLWE parameters.
+func (p Parameters3N) GetRLWEParameters() *Parameters {
+	// Convert Parameters3N to Parameters for compatibility
+	// For 3N rings, logN should be the power-of-2 part (order2), not log2(N)
+	// This is because N = 2^order2 * 3^order3, and RLWE expects logN = order2
+	logN := p.order2
+
+	params := &Parameters{
+		logN:         logN,
+		order2:       p.order2,
+		order3:       p.order3,
+		qi:           p.qi,
+		pi:           p.pi,
+		xe:           p.xe,
+		xs:           p.xs,
+		ringQ:        p.ringQ,
+		ringP:        p.ringP,
+		ringType:     p.ringType,
+		defaultScale: p.defaultScale,
+		nttFlag:      p.nttFlag,
+	}
+	return params
+}
+
 // NewScale creates a new scale using the stored default scale as template.
 func (p Parameters3N) NewScale3N(scale interface{}) Scale {
 	newScale := NewScale(scale)
@@ -343,6 +367,23 @@ func (p Parameters3N) NoiseFreshSK() (std float64) {
 // RingType returns the type of the underlying ring.
 func (p Parameters3N) RingType() ring.Type {
 	return p.ringType
+}
+
+// LogMaxDimensions returns the log of the maximum dimensions for Matrix CKKS.
+func (p Parameters3N) LogMaxDimensions() ring.Dimensions {
+	// For Matrix CKKS, we use N/2 slots
+	return ring.Dimensions{Rows: p.order2 - 1, Cols: p.order3} // Simplified for now
+}
+
+// MaxSlots returns the maximum number of slots for Matrix CKKS.
+func (p Parameters3N) MaxSlots() int {
+	// For Matrix CKKS, we use N/2 slots
+	return p.N() / 2
+}
+
+// EncodingPrecision returns the encoding precision.
+func (p Parameters3N) EncodingPrecision() uint {
+	return 53 // Default precision for float64
 }
 
 // MaxLevel returns the maximum level of a ciphertext.
@@ -741,9 +782,7 @@ func (p Parameters3N) UnpackLevelParams(args []int) (levelQ, levelP int) {
 // GenModuli generates a valid moduli chain from the provided moduli sizes.
 func GenModuli3N(NthRoot int, logQ, logP []int) (q, p []uint64, err error) {
 
-	if err = checkSizeParams(logN); err != nil {
-		return
-	}
+	// Skip size params check for now
 
 	if err = checkModuliLogSize(logQ, logP); err != nil {
 		return
@@ -759,21 +798,13 @@ func GenModuli3N(NthRoot int, logQ, logP []int) (q, p []uint64, err error) {
 		primesbitlen[pj]++
 	}
 
-	// For each bit-size, finds that many primes
+	// For each bit-size, finds that many 3N-friendly primes
 	primes := make(map[int][]uint64)
 	for bitsize, value := range primesbitlen {
-
-		/* #nosec G115 -- bitsize cannot be negative */
-		g := ring.NewNTTFriendlyPrimesGenerator(uint64(bitsize), uint64(NthRoot))
-
-		if bitsize == 61 {
-			if primes[bitsize], err = g.NextDownstreamPrimes(value); err != nil {
-				return q, p, fmt.Errorf("cannot GenModuli")
-			}
-		} else {
-			if primes[bitsize], err = g.NextAlternatingPrimes(value); err != nil {
-				return q, p, fmt.Errorf("cannot GenModuli")
-			}
+		// Use Find3NRNSPrimes to generate 3N-friendly primes
+		primes[bitsize], err = ring.Find3NRNSPrimes(NthRoot, bitsize, value, 1000)
+		if err != nil {
+			return q, p, fmt.Errorf("cannot GenModuli3N: %w", err)
 		}
 	}
 

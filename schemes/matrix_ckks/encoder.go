@@ -24,7 +24,7 @@ type FloatSlice interface{}
 //
 // The encoding works similarly to CKKS but adapts to the 3N-ring structure for better matrix operations.
 type Encoder struct {
-	parameters   Parameters
+	parameters   *rlwe.Parameters3N
 	prec         uint
 	bigintCoeffs []*big.Int
 	qHalf        *big.Int
@@ -36,14 +36,14 @@ type Encoder struct {
 // Optional field `precision` can be given. If precision is empty
 // or <= 53, then float64 and complex128 types will be used to
 // perform the encoding. Else *[big.Float] and *[bignum.Complex] will be used.
-func NewEncoder(parameters Parameters, precision ...uint) (ecd *Encoder) {
+func NewEncoder(parameters *rlwe.Parameters3N, precision ...uint) (ecd *Encoder) {
 	n := parameters.N()
 
 	var prec uint
 	if len(precision) != 0 && precision[0] != 0 {
 		prec = precision[0]
 	} else {
-		prec = parameters.EncodingPrecision()
+		prec = 53 // Default precision for float64
 	}
 
 	ecd = &Encoder{
@@ -68,23 +68,33 @@ func (ecd *Encoder) Prec() uint {
 }
 
 // Parameters returns the parameters of the [Encoder].
-func (ecd *Encoder) GetParameters() Parameters {
+func (ecd *Encoder) GetParameters() *rlwe.Parameters3N {
 	return ecd.parameters
 }
 
 // EncodePolynomial encodes a polynomial (as uint64 coefficients) into a plaintext.
-// This is for basic polynomial operations without complex encoding.
-
-// TODO: construct an encoding using iDFT
+// This is for basic polynomial operations with proper scaling.
 func (ecd *Encoder) EncodePolynomial(values []uint64, pt *rlwe.Plaintext) (err error) {
 	if len(values) > ecd.n {
 		return fmt.Errorf("too many values: %d > %d", len(values), ecd.n)
 	}
 
-	// For debugging: don't use scale, just set coefficients directly
-	// Set coefficients directly without scaling
+	// Get the plaintext scale
+	scale := pt.Scale.Uint64()
+	ringQ := ecd.parameters.RingQ().AtLevel(pt.Level())
+	modulus := ringQ.SubRings[0].Modulus
+
+	// Encode values with proper fixed-point encoding
 	for i, val := range values {
-		pt.Value.Coeffs[0][i] = val
+		// Scale the value by the plaintext scale
+		scaledVal := val * scale
+
+		// Apply proper modular arithmetic (centering around modulus)
+		if scaledVal >= modulus>>1 {
+			pt.Value.Coeffs[0][i] = modulus - scaledVal
+		} else {
+			pt.Value.Coeffs[0][i] = scaledVal
+		}
 	}
 
 	// Zero out remaining coefficients
@@ -99,43 +109,79 @@ func (ecd *Encoder) EncodePolynomial(values []uint64, pt *rlwe.Plaintext) (err e
 }
 
 // DecodePolynomial extracts polynomial coefficients as uint64 values.
-// This is for basic polynomial operations without complex decoding.
+// This is for basic polynomial operations with proper scaling.
 func (ecd *Encoder) DecodePolynomial(pt *rlwe.Plaintext, values []uint64) (err error) {
 	if len(values) > ecd.n {
 		return fmt.Errorf("too many values: %d > %d", len(values), ecd.n)
 	}
 
-	// For debugging: extract coefficients directly without scale division
-	var rawValues []uint64
+	// Get the plaintext scale
+	scale := pt.Scale.Uint64()
 
 	// If the plaintext is in NTT domain, we need to convert it back to coefficient domain first
 	if pt.IsNTT {
 		ringQ := ecd.parameters.RingQ().AtLevel(pt.Level())
 		ringQ.INTT(pt.Value, ecd.buff)
 
-		// Extract raw coefficients from the converted polynomial
-		rawValues = make([]uint64, len(values))
-		for i := range rawValues {
+		// Extract and decode coefficients from the converted polynomial
+		modulus := ringQ.SubRings[0].Modulus
+
+		for i := range values {
+			var rawVal uint64
 			if i < len(ecd.buff.Coeffs[0]) {
-				rawValues[i] = ecd.buff.Coeffs[0][i]
+				rawVal = ecd.buff.Coeffs[0][i]
 			} else {
-				rawValues[i] = 0
+				rawVal = 0
+			}
+
+			// Apply proper modular arithmetic (centering around modulus)
+			var centeredVal uint64
+			if rawVal >= modulus>>1 {
+				centeredVal = modulus - rawVal
+			} else {
+				centeredVal = rawVal
+			}
+
+			// Decode by dividing by the scale with proper rounding (Standard Lattigo method)
+			if scale > 0 {
+				// Add scale/2 for rounding before division
+				roundedVal := centeredVal + scale/2
+				values[i] = roundedVal / scale
+			} else {
+				values[i] = 0
 			}
 		}
 	} else {
-		// Extract raw coefficients directly if already in coefficient domain
-		rawValues = make([]uint64, len(values))
-		for i := range rawValues {
+		// Extract and decode coefficients directly if already in coefficient domain
+		ringQ := ecd.parameters.RingQ().AtLevel(pt.Level())
+		modulus := ringQ.SubRings[0].Modulus
+
+		for i := range values {
+			var rawVal uint64
 			if i < len(pt.Value.Coeffs[0]) {
-				rawValues[i] = pt.Value.Coeffs[0][i]
+				rawVal = pt.Value.Coeffs[0][i]
 			} else {
-				rawValues[i] = 0
+				rawVal = 0
+			}
+
+			// Apply proper modular arithmetic (centering around modulus)
+			var centeredVal uint64
+			if rawVal >= modulus>>1 {
+				centeredVal = modulus - rawVal
+			} else {
+				centeredVal = rawVal
+			}
+
+			// Decode by dividing by the scale with proper rounding (Standard Lattigo method)
+			if scale > 0 {
+				// Add scale/2 for rounding before division
+				roundedVal := centeredVal + scale/2
+				values[i] = roundedVal / scale
+			} else {
+				values[i] = 0
 			}
 		}
 	}
-
-	// For debugging: just copy raw values directly
-	copy(values, rawValues)
 
 	return nil
 }

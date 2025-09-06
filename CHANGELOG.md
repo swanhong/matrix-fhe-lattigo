@@ -286,7 +286,7 @@ All notable changes to this library are documented in this file.
 - BFV/BGV/CKKS: removed scheme-specific `KeyGenerator`, `Encryptor` and `Decryptor`. They have been replaced by `rlwe.KeyGenerator`, `rlwe.Encryptor` and `rlwe.Decryptor`. The API go instantiate those struct from the scheme specific API, e.g. `bgv.NewEncryptor`, is still available but will return its corresponding `rlwe` struct.
 - BFV/BGV/CKKS: removed the following deprecated methods, when applicable
     - `AddNoMod`, `AddNoModNew`, `SubNoMod`, `SubNoModNew`, `Reduce` and `ReduceNew`
-    - `PowerOf2`, `Power` and `PowerNew` which are replaced by `PolynomialBasis` and `GenPower`.
+    - `order2`, `Power` and `PowerNew` which are replaced by `PolynomialBasis` and `GenPower`.
 - BFV/BGV/CKKS: the naive method algorithms for `InnerSum` and `Replicate` have been removed. The method names `InnerSumLog` and `ReplicateLog` have been replaced by `InnerSum` and `Replicate` respectively.
 
 ## [4.0.0] - 2022-10-04

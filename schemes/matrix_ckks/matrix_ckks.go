@@ -26,9 +26,9 @@ import (
 // Note: the user can update the field MetaData to set a specific scaling factor,
 // plaintext dimensions (if applicable) or encoding domain, before encoding values
 // on the created plaintext.
-func NewPlaintext(params Parameters, level int) (pt *rlwe.Plaintext) {
+func NewPlaintext(params *rlwe.Parameters3N, level int) (pt *rlwe.Plaintext) {
 	// Create plaintext using the RLWE method first to get proper metadata
-	pt = rlwe.NewPlaintext(params.Parameters, level)
+	pt = rlwe.NewPlaintext(params.GetRLWEParameters(), level)
 
 	// Replace the polynomial with one from our Matrix ring
 	ringQ := params.RingQ().AtLevel(level)
@@ -49,9 +49,9 @@ func NewPlaintext(params Parameters, level int) (pt *rlwe.Plaintext) {
 //   - level: the level of the Ciphertext
 //
 // output: a newly allocated [rlwe.Ciphertext] of the specified degree and level.
-func NewCiphertext(params Parameters, degree, level int) (ct *rlwe.Ciphertext) {
+func NewCiphertext(params *rlwe.Parameters3N, degree, level int) (ct *rlwe.Ciphertext) {
 	// Create ciphertext using RLWE method first to get proper metadata
-	ct = rlwe.NewCiphertext(params.Parameters, degree, level)
+	ct = rlwe.NewCiphertext(params.GetRLWEParameters(), degree, level)
 
 	// Replace the polynomials with ones from our Matrix ring
 	ringQ := params.RingQ().AtLevel(level)
@@ -74,7 +74,7 @@ func NewCiphertext(params Parameters, degree, level int) (ct *rlwe.Ciphertext) {
 //   - key: *[rlwe.SecretKey] or *[rlwe.PublicKey]
 //
 // output: an [rlwe.Encryptor] instantiated with the provided key.
-func NewEncryptor(params Parameters, key rlwe.EncryptionKey) *rlwe.Encryptor {
+func NewEncryptor(params *rlwe.Parameters3N, key rlwe.EncryptionKey) *rlwe.Encryptor {
 	return rlwe.NewEncryptor(params, key)
 }
 
@@ -85,7 +85,7 @@ func NewEncryptor(params Parameters, key rlwe.EncryptionKey) *rlwe.Encryptor {
 //   - key: *[rlwe.SecretKey]
 //
 // output: an [rlwe.Decryptor] instantiated with the provided secret-key.
-func NewDecryptor(params Parameters, key *rlwe.SecretKey) *rlwe.Decryptor {
+func NewDecryptor(params *rlwe.Parameters3N, key *rlwe.SecretKey) *rlwe.Decryptor {
 	return rlwe.NewDecryptor(params, key)
 }
 
@@ -95,6 +95,6 @@ func NewDecryptor(params Parameters, key *rlwe.SecretKey) *rlwe.Decryptor {
 //   - params: an [rlwe.ParameterProvider] interface
 //
 // output: an [rlwe.KeyGenerator].
-func NewKeyGenerator(params Parameters) *rlwe.KeyGenerator {
+func NewKeyGenerator(params *rlwe.Parameters3N) *rlwe.KeyGenerator {
 	return rlwe.NewKeyGenerator(params)
 }
