@@ -12,6 +12,7 @@ package matrix_ckks
 
 import (
 	"github.com/tuneinsight/lattigo/v6/core/rlwe"
+	"github.com/tuneinsight/lattigo/v6/ring"
 )
 
 // NewPlaintext allocates a new [rlwe.Plaintext] for matrix CKKS.
@@ -26,7 +27,14 @@ import (
 // plaintext dimensions (if applicable) or encoding domain, before encoding values
 // on the created plaintext.
 func NewPlaintext(params Parameters, level int) (pt *rlwe.Plaintext) {
-	pt = rlwe.NewPlaintext(params, level)
+	// Create plaintext using the RLWE method first to get proper metadata
+	pt = rlwe.NewPlaintext(params.Parameters, level)
+
+	// Replace the polynomial with one from our Matrix ring
+	ringQ := params.RingQ().AtLevel(level)
+	pt.Value = ringQ.NewPoly()
+
+	// Set Matrix CKKS specific metadata
 	pt.IsBatched = true
 	pt.Scale = params.DefaultScale()
 	pt.LogDimensions = params.LogMaxDimensions()
@@ -42,7 +50,17 @@ func NewPlaintext(params Parameters, level int) (pt *rlwe.Plaintext) {
 //
 // output: a newly allocated [rlwe.Ciphertext] of the specified degree and level.
 func NewCiphertext(params Parameters, degree, level int) (ct *rlwe.Ciphertext) {
-	ct = rlwe.NewCiphertext(params, degree, level)
+	// Create ciphertext using RLWE method first to get proper metadata
+	ct = rlwe.NewCiphertext(params.Parameters, degree, level)
+
+	// Replace the polynomials with ones from our Matrix ring
+	ringQ := params.RingQ().AtLevel(level)
+	ct.Value = make([]ring.Poly, degree+1)
+	for i := range ct.Value {
+		ct.Value[i] = ringQ.NewPoly()
+	}
+
+	// Set Matrix CKKS specific metadata
 	ct.IsBatched = true
 	ct.Scale = params.DefaultScale()
 	ct.LogDimensions = params.LogMaxDimensions()

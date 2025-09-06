@@ -81,15 +81,10 @@ func (ecd *Encoder) EncodePolynomial(values []uint64, pt *rlwe.Plaintext) (err e
 		return fmt.Errorf("too many values: %d > %d", len(values), ecd.n)
 	}
 
-	// Get the scale factor from the plaintext metadata
-	scale := pt.Scale.Uint64()
-	ringQ := ecd.parameters.RingQ().AtLevel(pt.Level())
-
-	// Scale the input values and set coefficients
+	// For debugging: don't use scale, just set coefficients directly
+	// Set coefficients directly without scaling
 	for i, val := range values {
-		// Multiply by scale factor to preserve precision during fixed-point arithmetic
-		scaledVal := (val * scale) % ringQ.SubRings[0].Modulus
-		pt.Value.Coeffs[0][i] = scaledVal
+		pt.Value.Coeffs[0][i] = val
 	}
 
 	// Zero out remaining coefficients
@@ -110,8 +105,7 @@ func (ecd *Encoder) DecodePolynomial(pt *rlwe.Plaintext, values []uint64) (err e
 		return fmt.Errorf("too many values: %d > %d", len(values), ecd.n)
 	}
 
-	// Get the scale factor from the plaintext metadata
-	scale := pt.Scale.Uint64()
+	// For debugging: extract coefficients directly without scale division
 	var rawValues []uint64
 
 	// If the plaintext is in NTT domain, we need to convert it back to coefficient domain first
@@ -140,17 +134,8 @@ func (ecd *Encoder) DecodePolynomial(pt *rlwe.Plaintext, values []uint64) (err e
 		}
 	}
 
-	// Divide by scale factor to get back original values
-	if scale > 0 {
-		for i := range values {
-			// Use proper rounding instead of truncation
-			// Add half the scale before dividing for rounding
-			values[i] = (rawValues[i] + scale/2) / scale
-		}
-	} else {
-		// If scale is 0, just copy raw values
-		copy(values, rawValues)
-	}
+	// For debugging: just copy raw values directly
+	copy(values, rawValues)
 
 	return nil
 }

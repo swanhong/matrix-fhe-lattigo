@@ -30,7 +30,7 @@ type Type int
 const (
 	Standard           = Type(0) // Z[X]/(X^N + 1) (Default)
 	ConjugateInvariant = Type(1) // Z[X+X^-1]/(X^2N + 1)
-	Matrix             = Type(2) // Z[X]/(X^N - X^{N/2} + 1)
+	Matrix             = Type(2) // Z[X]/(X^N - X^{N/2} + 1) (Matrix CKKS)
 )
 
 // String returns the string representation of the ring Type
@@ -60,6 +60,8 @@ func (rt *Type) UnmarshalJSON(b []byte) error {
 		*rt = Standard
 	case "ConjugateInvariant":
 		*rt = ConjugateInvariant
+	case "Matrix":
+		*rt = Matrix
 	}
 
 	return nil
@@ -282,6 +284,7 @@ func NewRingConjugateInvariant(N int, Moduli []uint64) (r *Ring, err error) {
 // NewRingFromType creates a new RNS Ring with degree N and coefficient moduli Moduli for which the type of NTT is determined by the ringType argument.
 // If ringType==Standard, the ring is instantiated with standard NTT with the Nth root of unity 2*N (or 3*N for 3N rings).
 // If ringType==ConjugateInvariant, the ring is instantiated with a ConjugateInvariant NTT with Nth root of unity 4*N (or 6*N for 3N rings).
+// If ringType==Matrix, the ring is instantiated with 3N NTT for the cyclotomic polynomial X^N - X^{N/2} + 1.
 // N must be a power of two larger than 8 or satisfy 3N = 2^a * 3^{b+1} condition.
 // Moduli should be a non-empty []uint64 with distinct prime elements. All moduli must also be equal to 1 modulo the root of unity.
 // An error is returned with a nil *Ring in the case of non NTT-enabling parameters.
@@ -290,17 +293,15 @@ func NewRingFromType(N int, Moduli []uint64, ringType Type) (r *Ring, err error)
 
 	switch ringType {
 	case Standard:
-		if is3NRing {
-			return NewRingWithCustomNTT(N, Moduli, NewNumberTheoreticTransformer3N, 3*N)
-		} else {
-			return NewRingWithCustomNTT(N, Moduli, NewNumberTheoreticTransformerStandard, 2*N)
-		}
+		return NewRingWithCustomNTT(N, Moduli, NewNumberTheoreticTransformerStandard, 2*N)
 	case ConjugateInvariant:
-		if is3NRing {
-			return NewRingWithCustomNTT(N, Moduli, NewNumberTheoreticTransformer3N, 6*N)
-		} else {
-			return NewRingWithCustomNTT(N, Moduli, NewNumberTheoreticTransformerConjugateInvariant, 4*N)
+		return NewRingWithCustomNTT(N, Moduli, NewNumberTheoreticTransformerConjugateInvariant, 4*N)
+	case Matrix:
+		// Matrix ring always uses 3N NTT for X^N - X^{N/2} + 1 cyclotomic polynomial
+		if !is3NRing {
+			return nil, fmt.Errorf("matrix ring type requires N to satisfy 3N = 2^a * 3^{b+1} condition, got N=%d", N)
 		}
+		return NewRingWithCustomNTT(N, Moduli, NewNumberTheoreticTransformer3N, 3*N)
 	default:
 		return nil, fmt.Errorf("invalid ring type")
 	}
