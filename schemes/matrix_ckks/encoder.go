@@ -18,6 +18,93 @@ type Float interface {
 // indicate that the expected input should be []Float.
 type FloatSlice interface{}
 
+// computeInputPermutation computes the input permutation for ternary rings.
+// This is equivalent to the fft_input_permutation function from the Python reference.
+// For numbers of the form 2^a * 3^b, this creates a permutation that optimizes
+// the mixed-radix FFT computation order.
+func computeInputPermutation(n int) []int {
+	// Factor n into 2^a * 3^b form
+	a, b := factorN3N(n)
+	if (1<<a)*pow3(b) != n {
+		panic(fmt.Sprintf("n = %d must be of form 2^a * 3^b, got 2^%d * 3^%d", n, a, b))
+	}
+	if a < 1 {
+		panic(fmt.Sprintf("n must be even, got n = %d", n))
+	}
+
+	index := make([]int, n)
+	length := 1
+	index[0] = 0
+
+	shift := n >> 1
+	for i := 0; i < length; i++ {
+		index[length+i] = index[i] + shift
+	}
+	length *= 2
+
+	// Apply radix-3 layers
+	for i := 0; i < b; i++ {
+		shift /= 3
+		baseLen := length
+		for j := 0; j < baseLen; j++ {
+			index[length+j] = index[j] + shift
+		}
+		length += baseLen
+		for j := 0; j < baseLen; j++ {
+			index[length+j] = index[j] + 2*shift
+		}
+		length += baseLen
+	}
+
+	// Apply remaining radix-2 layers
+	for i := 0; i < a-1; i++ {
+		shift /= 2
+		baseLen := length
+		for j := 0; j < baseLen; j++ {
+			index[length+j] = index[j] + shift
+		}
+		length += baseLen
+	}
+
+	return index
+}
+
+// computeInversePermutation computes the inverse of a permutation.
+func computeInversePermutation(perm []int) []int {
+	inv := make([]int, len(perm))
+	for i, p := range perm {
+		inv[p] = i
+	}
+	return inv
+}
+
+// factorN3N factors n into 2^a * 3^b form
+func factorN3N(n int) (int, int) {
+	a := 0
+	for n%2 == 0 {
+		a++
+		n /= 2
+	}
+	b := 0
+	for n%3 == 0 {
+		b++
+		n /= 3
+	}
+	if n != 1 {
+		panic(fmt.Sprintf("n must be of form 2^a * 3^b, but has other factors: %d", n))
+	}
+	return a, b
+}
+
+// pow3 computes 3^b
+func pow3(b int) int {
+	result := 1
+	for i := 0; i < b; i++ {
+		result *= 3
+	}
+	return result
+}
+
 // Encoder is a type that implements the encoding and decoding interface for the Matrix CKKS scheme.
 // It provides methods to encode/decode []complex128 and []float64 types into/from Plaintext types
 // using 3N-ring structure instead of power-of-2 rings.
