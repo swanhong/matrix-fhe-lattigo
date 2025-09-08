@@ -159,34 +159,45 @@ func (ecd *Encoder) GetParameters() *rlwe.Parameters3N {
 	return ecd.parameters
 }
 
+// Encode encodes values into a plaintext, supporting both polynomial coefficients and complex vectors
+func (ecd *Encoder) Encode(values interface{}, pt *rlwe.Plaintext) (err error) {
+	switch values := values.(type) {
+	case []uint64:
+		// Polynomial coefficient encoding (original Matrix CKKS approach)
+		return ecd.EncodePolynomial(values, pt)
+	case []float64:
+		// Float64 vector encoding (like original CKKS)
+		return ecd.EncodeFloat64(values, pt)
+	case []complex128:
+		// Complex vector encoding (like original CKKS)
+		return ecd.EncodeComplex(values, pt)
+	default:
+		return fmt.Errorf("cannot Encode: supported types are []uint64, []float64, or []complex128, but %T was given", values)
+	}
+}
+
 // EncodePolynomial encodes a polynomial (as uint64 coefficients) into a plaintext.
-// This is for basic polynomial operations with proper scaling.
+// This function follows the original CKKS approach exactly.
 func (ecd *Encoder) EncodePolynomial(values []uint64, pt *rlwe.Plaintext) (err error) {
 	if len(values) > ecd.n {
 		return fmt.Errorf("too many values: %d > %d", len(values), ecd.n)
 	}
 
-	// Get the plaintext scale
-	scale := pt.Scale.Uint64()
-	ringQ := ecd.parameters.RingQ().AtLevel(pt.Level())
-	modulus := ringQ.SubRings[0].Modulus
-
-	// Encode values with proper fixed-point encoding
+	// Convert uint64 values to float64 for encoding (same as original CKKS)
+	floatValues := make([]float64, len(values))
 	for i, val := range values {
-		// Scale the value by the plaintext scale
-		scaledVal := val * scale
-
-		// Apply proper modular arithmetic (centering around modulus)
-		if scaledVal >= modulus>>1 {
-			pt.Value.Coeffs[0][i] = modulus - scaledVal
-		} else {
-			pt.Value.Coeffs[0][i] = scaledVal
-		}
+		floatValues[i] = float64(val)
 	}
+
+	// Use the original CKKS encoding approach
+	// This uses pt.Scale.Float64() directly, just like original CKKS
+	Float64ToFixedPointCRT(ecd.parameters.RingQ().AtLevel(pt.Level()), floatValues, pt.Scale.Float64(), pt.Value.Coeffs)
 
 	// Zero out remaining coefficients
 	for i := len(values); i < ecd.n; i++ {
-		pt.Value.Coeffs[0][i] = 0
+		for j := range pt.Value.Coeffs {
+			pt.Value.Coeffs[j][i] = 0
+		}
 	}
 
 	// Mark the plaintext as being in coefficient domain (not NTT domain)
@@ -195,79 +206,145 @@ func (ecd *Encoder) EncodePolynomial(values []uint64, pt *rlwe.Plaintext) (err e
 	return nil
 }
 
+// EncodeFloat64 encodes a float64 vector into a plaintext (like original CKKS)
+func (ecd *Encoder) EncodeFloat64(values []float64, pt *rlwe.Plaintext) (err error) {
+	if len(values) > ecd.n {
+		return fmt.Errorf("too many values: %d > %d", len(values), ecd.n)
+	}
+
+	// Use the original CKKS encoding approach
+	Float64ToFixedPointCRT(ecd.parameters.RingQ().AtLevel(pt.Level()), values, pt.Scale.Float64(), pt.Value.Coeffs)
+
+	// Zero out remaining coefficients
+	for i := len(values); i < ecd.n; i++ {
+		for j := range pt.Value.Coeffs {
+			pt.Value.Coeffs[j][i] = 0
+		}
+	}
+
+	// Mark the plaintext as being in coefficient domain (not NTT domain)
+	pt.IsNTT = false
+
+	return nil
+}
+
+// EncodeComplex encodes a complex128 vector into a plaintext (like original CKKS)
+func (ecd *Encoder) EncodeComplex(values []complex128, pt *rlwe.Plaintext) (err error) {
+	if len(values) > ecd.n {
+		return fmt.Errorf("too many values: %d > %d", len(values), ecd.n)
+	}
+
+	// Convert complex128 to float64 (real parts only)
+	floatValues := make([]float64, len(values))
+	for i, val := range values {
+		floatValues[i] = real(val)
+	}
+
+	// Use the original CKKS encoding approach
+	Float64ToFixedPointCRT(ecd.parameters.RingQ().AtLevel(pt.Level()), floatValues, pt.Scale.Float64(), pt.Value.Coeffs)
+
+	// Zero out remaining coefficients
+	for i := len(values); i < ecd.n; i++ {
+		for j := range pt.Value.Coeffs {
+			pt.Value.Coeffs[j][i] = 0
+		}
+	}
+
+	// Mark the plaintext as being in coefficient domain (not NTT domain)
+	pt.IsNTT = false
+
+	return nil
+}
+
+// Decode decodes a plaintext to values, supporting both polynomial coefficients and complex vectors
+func (ecd *Encoder) Decode(pt *rlwe.Plaintext, values interface{}) (err error) {
+	switch values := values.(type) {
+	case *[]uint64:
+		// Polynomial coefficient decoding (original Matrix CKKS approach)
+		return ecd.DecodePolynomial(pt, *values)
+	case *[]float64:
+		// Float64 vector decoding (like original CKKS)
+		return ecd.DecodeFloat64(pt, *values)
+	case *[]complex128:
+		// Complex vector decoding (like original CKKS)
+		return ecd.DecodeComplex(pt, *values)
+	default:
+		return fmt.Errorf("cannot Decode: supported types are *[]uint64, *[]float64, or *[]complex128, but %T was given", values)
+	}
+}
+
 // DecodePolynomial extracts polynomial coefficients as uint64 values.
-// This is for basic polynomial operations with proper scaling.
+// This function follows the original CKKS approach exactly.
 func (ecd *Encoder) DecodePolynomial(pt *rlwe.Plaintext, values []uint64) (err error) {
 	if len(values) > ecd.n {
 		return fmt.Errorf("too many values: %d > %d", len(values), ecd.n)
 	}
 
-	// Get the plaintext scale
-	scale := pt.Scale.Uint64()
+	// Convert to float64 for decoding (same as original CKKS)
+	floatValues := make([]float64, len(values))
 
-	// If the plaintext is in NTT domain, we need to convert it back to coefficient domain first
+	// Handle NTT domain conversion if needed
 	if pt.IsNTT {
 		ringQ := ecd.parameters.RingQ().AtLevel(pt.Level())
 		ringQ.INTT(pt.Value, ecd.buff)
-
-		// Extract and decode coefficients from the converted polynomial
-		modulus := ringQ.SubRings[0].Modulus
-
-		for i := range values {
-			var rawVal uint64
-			if i < len(ecd.buff.Coeffs[0]) {
-				rawVal = ecd.buff.Coeffs[0][i]
-			} else {
-				rawVal = 0
-			}
-
-			// Apply proper modular arithmetic (centering around modulus)
-			var centeredVal uint64
-			if rawVal >= modulus>>1 {
-				centeredVal = modulus - rawVal
-			} else {
-				centeredVal = rawVal
-			}
-
-			// Decode by dividing by the scale with proper rounding (Standard Lattigo method)
-			if scale > 0 {
-				// Add scale/2 for rounding before division
-				roundedVal := centeredVal + scale/2
-				values[i] = roundedVal / scale
-			} else {
-				values[i] = 0
-			}
-		}
+		err = ecd.polyToFloatNoCRT(ecd.buff.Coeffs[0], floatValues, pt.Scale, 0, ringQ)
 	} else {
-		// Extract and decode coefficients directly if already in coefficient domain
+		err = ecd.polyToFloatNoCRT(pt.Value.Coeffs[0], floatValues, pt.Scale, 0, ecd.parameters.RingQ().AtLevel(pt.Level()))
+	}
+
+	if err != nil {
+		return err
+	}
+
+	// Convert back to uint64
+	for i, val := range floatValues {
+		values[i] = uint64(val)
+	}
+
+	return nil
+}
+
+// DecodeFloat64 extracts float64 values (like original CKKS)
+func (ecd *Encoder) DecodeFloat64(pt *rlwe.Plaintext, values []float64) (err error) {
+	if len(values) > ecd.n {
+		return fmt.Errorf("too many values: %d > %d", len(values), ecd.n)
+	}
+
+	// Handle NTT domain conversion if needed
+	if pt.IsNTT {
 		ringQ := ecd.parameters.RingQ().AtLevel(pt.Level())
-		modulus := ringQ.SubRings[0].Modulus
+		ringQ.INTT(pt.Value, ecd.buff)
+		return ecd.polyToFloatNoCRT(ecd.buff.Coeffs[0], values, pt.Scale, 0, ringQ)
+	} else {
+		return ecd.polyToFloatNoCRT(pt.Value.Coeffs[0], values, pt.Scale, 0, ecd.parameters.RingQ().AtLevel(pt.Level()))
+	}
+}
 
-		for i := range values {
-			var rawVal uint64
-			if i < len(pt.Value.Coeffs[0]) {
-				rawVal = pt.Value.Coeffs[0][i]
-			} else {
-				rawVal = 0
-			}
+// DecodeComplex extracts complex128 values (like original CKKS)
+func (ecd *Encoder) DecodeComplex(pt *rlwe.Plaintext, values []complex128) (err error) {
+	if len(values) > ecd.n {
+		return fmt.Errorf("too many values: %d > %d", len(values), ecd.n)
+	}
 
-			// Apply proper modular arithmetic (centering around modulus)
-			var centeredVal uint64
-			if rawVal >= modulus>>1 {
-				centeredVal = modulus - rawVal
-			} else {
-				centeredVal = rawVal
-			}
+	// Convert to float64 for decoding (real parts only)
+	floatValues := make([]float64, len(values))
 
-			// Decode by dividing by the scale with proper rounding (Standard Lattigo method)
-			if scale > 0 {
-				// Add scale/2 for rounding before division
-				roundedVal := centeredVal + scale/2
-				values[i] = roundedVal / scale
-			} else {
-				values[i] = 0
-			}
-		}
+	// Handle NTT domain conversion if needed
+	if pt.IsNTT {
+		ringQ := ecd.parameters.RingQ().AtLevel(pt.Level())
+		ringQ.INTT(pt.Value, ecd.buff)
+		err = ecd.polyToFloatNoCRT(ecd.buff.Coeffs[0], floatValues, pt.Scale, 0, ringQ)
+	} else {
+		err = ecd.polyToFloatNoCRT(pt.Value.Coeffs[0], floatValues, pt.Scale, 0, ecd.parameters.RingQ().AtLevel(pt.Level()))
+	}
+
+	if err != nil {
+		return err
+	}
+
+	// Convert back to complex128
+	for i, val := range floatValues {
+		values[i] = complex(val, 0) // Real parts only
 	}
 
 	return nil
@@ -285,4 +362,84 @@ func (ecd *Encoder) ShallowCopy() *Encoder {
 		buff:         ecd.parameters.RingQ().NewPoly(),
 		n:            ecd.n,
 	}
+}
+
+// Float64ToFixedPointCRT encodes a slice of float64 values into CRT polynomial coefficients.
+// This is adapted from the original CKKS implementation.
+func Float64ToFixedPointCRT(r *ring.Ring, values []float64, scale float64, coeffs [][]uint64) {
+	start := len(values)
+	end := len(coeffs[0])
+
+	for i := 0; i < start; i++ {
+		SingleFloat64ToFixedPointCRT(r, i, values[i], scale, coeffs)
+	}
+
+	for i := start; i < end; i++ {
+		SingleFloat64ToFixedPointCRT(r, i, 0, 0, coeffs)
+	}
+}
+
+// SingleFloat64ToFixedPointCRT encodes a single float64 value into CRT polynomial coefficients.
+// This is adapted from the original CKKS implementation.
+func SingleFloat64ToFixedPointCRT(r *ring.Ring, i int, value float64, scale float64, coeffs [][]uint64) {
+	if value == 0 {
+		for j := range coeffs {
+			coeffs[j][i] = 0
+		}
+		return
+	}
+
+	var isNegative bool
+	var xFlo *big.Float
+	var xInt *big.Int
+	var c uint64
+
+	isNegative = false
+
+	if value < 0 {
+		isNegative = true
+		scale *= -1
+	}
+
+	value *= scale
+
+	moduli := r.ModuliChain()[:r.Level()+1]
+
+	if value >= 1.8446744073709552e+19 {
+		xFlo = big.NewFloat(value)
+		xInt = new(big.Int)
+		xFlo.Int(xInt)
+	} else {
+		c = uint64(value)
+		if isNegative {
+			c = -c
+		}
+	}
+
+	for j, qi := range moduli {
+		if xFlo != nil {
+			coeffs[j][i] = ring.CRed(xInt.Uint64(), qi)
+		} else {
+			coeffs[j][i] = ring.CRed(c, qi)
+		}
+	}
+}
+
+// polyToFloatNoCRT decodes a single-level CRT poly on a real valued FloatSlice.
+// This is adapted from the original CKKS implementation.
+func (ecd *Encoder) polyToFloatNoCRT(coeffs []uint64, values []float64, scale rlwe.Scale, logSlots int, r *ring.Ring) (err error) {
+	Q := r.SubRings[0].Modulus
+	slots := len(values)
+
+	sf64 := scale.Float64()
+
+	for i := 0; i < slots; i++ {
+		if coeffs[i] >= Q>>1 {
+			values[i] = -float64(Q-coeffs[i]) / sf64
+		} else {
+			values[i] = float64(coeffs[i]) / sf64
+		}
+	}
+
+	return nil
 }

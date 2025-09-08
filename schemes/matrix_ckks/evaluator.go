@@ -2,34 +2,61 @@ package matrix_ckks
 
 import (
 	"fmt"
+	"math/big"
 
 	"github.com/tuneinsight/lattigo/v6/core/rlwe"
+	"github.com/tuneinsight/lattigo/v6/ring"
+	"github.com/tuneinsight/lattigo/v6/utils/bignum"
 )
 
-// Evaluator wraps the underlying RLWE evaluator for matrix CKKS homomorphic operations.
+// Evaluator is a Matrix CKKS-specific evaluator that provides homomorphic operations
+// optimized for 3N-ring structures. It uses the Matrix CKKS encoder and implements
+// proper RNS rescaling operations.
 type Evaluator struct {
-	*rlwe.Evaluator
+	*Encoder
 	parameters *rlwe.Parameters3N
+	evk        rlwe.EvaluationKeySet
+	buffQ      [3]ring.Poly // Memory buffers for intermediate computations
 }
 
 // NewEvaluator instantiates a new [Evaluator] for matrix CKKS.
 //
 // inputs:
-//   - params: an [rlwe.ParameterProvider] interface
+//   - params: an [rlwe.Parameters3N] interface
 //   - evk: *[rlwe.EvaluationKeySet] (can be nil for addition/subtraction only)
 //
 // output: an [Evaluator] for performing homomorphic operations.
 func NewEvaluator(params *rlwe.Parameters3N, evk rlwe.EvaluationKeySet) *Evaluator {
-	return &Evaluator{
-		Evaluator:  rlwe.NewEvaluator(params.GetRLWEParameters(), evk),
-		parameters: params,
+	encoder := NewEncoder(params)
+
+	// Initialize memory buffers
+	ringQ := params.RingQ()
+	buffQ := [3]ring.Poly{
+		ringQ.NewPoly(),
+		ringQ.NewPoly(),
+		ringQ.NewPoly(),
 	}
+
+	return &Evaluator{
+		Encoder:    encoder,
+		parameters: params,
+		evk:        evk,
+		buffQ:      buffQ,
+	}
+}
+
+// GetParameters returns the Matrix CKKS parameters.
+func (eval *Evaluator) GetParameters() *rlwe.Parameters3N {
+	return eval.parameters
+}
+
+// GetRLWEParameters returns the underlying RLWE parameters.
+func (eval *Evaluator) GetRLWEParameters() *rlwe.Parameters {
+	return eval.parameters.GetRLWEParameters()
 }
 
 // Add performs homomorphic addition of two ciphertexts and stores the result in ctOut.
 // ctOut = ct0 + ct1
-//
-// This is a simplified implementation that focuses on correctness over performance.
 func (eval *Evaluator) Add(ct0, ct1, ctOut *rlwe.Ciphertext) (err error) {
 	// Check that ciphertexts are at the same level
 	if ct0.Level() != ct1.Level() {
@@ -46,7 +73,7 @@ func (eval *Evaluator) Add(ct0, ct1, ctOut *rlwe.Ciphertext) (err error) {
 	ctOut.Scale = ct0.Scale
 	ctOut.LogDimensions = ct0.LogDimensions
 	ctOut.IsBatched = ct0.IsBatched
-	ctOut.IsNTT = ct0.IsNTT // This was missing! Keep same domain as inputs
+	ctOut.IsNTT = ct0.IsNTT // Keep same domain as inputs
 
 	// Get ring at the appropriate level
 	ringQ := eval.parameters.RingQ().AtLevel(level)
@@ -83,8 +110,7 @@ func (eval *Evaluator) AddNew(ct0, ct1 *rlwe.Ciphertext) (*rlwe.Ciphertext, erro
 // Mul performs homomorphic multiplication of two ciphertexts and stores the result in ctOut.
 // ctOut = ct0 * ct1
 //
-// Note: For Matrix CKKS, we perform pointwise multiplication of coefficients,
-// not polynomial convolution multiplication. This is different from standard ring operations.
+// This implements proper polynomial multiplication in the 3N-ring structure.
 func (eval *Evaluator) Mul(ct0, ct1, ctOut *rlwe.Ciphertext) (err error) {
 	// Check that ciphertexts are at the same level
 	if ct0.Level() != ct1.Level() {
@@ -93,32 +119,12 @@ func (eval *Evaluator) Mul(ct0, ct1, ctOut *rlwe.Ciphertext) (err error) {
 
 	level := ct0.Level()
 
-	// For Matrix CKKS, we do pointwise multiplication, so output degree is max of input degrees
-	// not sum (like in polynomial convolution)
-	outputDegree := max(ct0.Degree(), ct1.Degree())
+	// For polynomial multiplication, output degree is sum of input degrees
+	outputDegree := ct0.Degree() + ct1.Degree()
 	ctOut.Resize(outputDegree, level)
 
-	// Copy metadata (scale will be updated)
-	// For Matrix CKKS pointwise multiplication, the scale should be the product of input scales
-	// but we need to manage it to avoid overflow with smaller moduli
-	inputScale := ct0.Scale.Uint64()
-
-	// For pointwise multiplication, the natural scale would be inputScale^2
-	// but we need to rescale to keep within modulus bounds
-	ringQ2 := eval.parameters.RingQ().AtLevel(level)
-	modulus := ringQ2.ModuliChain()[0]
-
-	// Use the product of input scales, but ensure it fits in the modulus
-	productScale := inputScale * inputScale
-
-	// If the product scale is too large, scale it down
-	if productScale > modulus/10 {
-		// Use a reasonable scale that allows the multiplication result to fit
-		productScale = modulus / 1000
-	}
-
-	ctOut.Scale = rlwe.NewScale(productScale)
-
+	// Copy metadata and update scale
+	ctOut.Scale = ct0.Scale.Mul(ct1.Scale)
 	ctOut.LogDimensions = ct0.LogDimensions
 	ctOut.IsBatched = ct0.IsBatched
 	ctOut.IsNTT = ct0.IsNTT
@@ -126,44 +132,61 @@ func (eval *Evaluator) Mul(ct0, ct1, ctOut *rlwe.Ciphertext) (err error) {
 	// Get ring at the appropriate level
 	ringQ := eval.parameters.RingQ().AtLevel(level)
 
-	// For Matrix CKKS, perform pointwise multiplication of coefficients
-	// This is different from polynomial ring multiplication
-
-	// Handle different degree combinations
-	if ct0.Degree() == 1 && ct1.Degree() == 1 {
-		// Both are degree 1, result can be degree 1 for pointwise operations
-		ctOut.Resize(1, level)
-
-		// Pointwise multiplication: (a0 + a1*X) * (b0 + b1*X) = (a0*b0) + (a1*b1)*X
-		// where coefficients are multiplied pointwise, not convolved
-
-		// When we multiply two scaled values (a*scale) * (b*scale) = (a*b*scale^2)
-		// But our output scale might be different, so we need to adjust
-
-		for j := 0; j <= level; j++ {
-			for k := 0; k < ringQ.N(); k++ {
-				// Multiply corresponding coefficients pointwise
-				c0_coeff := ct0.Value[0].Coeffs[j][k]
-				c1_coeff := ct1.Value[0].Coeffs[j][k]
-
-				// Multiply and adjust for scale difference
-				product := (c0_coeff * c1_coeff) % ringQ.SubRings[j].Modulus
-				// The product is scaled by inputScale^2, but we want outputScale
-				// So we need to multiply by (outputScale / inputScale^2)
-
-				// For safety, just use the raw product for now and let decoding handle the scale
-				ctOut.Value[0].Coeffs[j][k] = product
-
-				// For degree 1 terms
-				c0_deg1 := ct0.Value[1].Coeffs[j][k]
-				c1_deg1 := ct1.Value[1].Coeffs[j][k]
-				product1 := (c0_deg1 * c1_deg1) % ringQ.SubRings[j].Modulus
-				ctOut.Value[1].Coeffs[j][k] = product1
-			}
+	// Convert to NTT domain if needed
+	if !ct0.IsNTT {
+		ringQ.NTT(ct0.Value[0], ct0.Value[0])
+		if ct0.Degree() == 1 {
+			ringQ.NTT(ct0.Value[1], ct0.Value[1])
 		}
-	} else {
-		return fmt.Errorf("unsupported ciphertext degrees for pointwise multiplication: %d, %d", ct0.Degree(), ct1.Degree())
+		ct0.IsNTT = true
 	}
+	if !ct1.IsNTT {
+		ringQ.NTT(ct1.Value[0], ct1.Value[0])
+		if ct1.Degree() == 1 {
+			ringQ.NTT(ct1.Value[1], ct1.Value[1])
+		}
+		ct1.IsNTT = true
+	}
+
+	// Perform polynomial multiplication in NTT domain
+	if ct0.Degree() == 0 && ct1.Degree() == 0 {
+		// Both are degree 0 (plaintext-like)
+		ringQ.MulCoeffsMontgomery(ct0.Value[0], ct1.Value[0], ctOut.Value[0])
+	} else if ct0.Degree() == 0 && ct1.Degree() == 1 {
+		// ct0 is degree 0, ct1 is degree 1
+		ringQ.MulCoeffsMontgomery(ct0.Value[0], ct1.Value[0], ctOut.Value[0])
+		ringQ.MulCoeffsMontgomery(ct0.Value[0], ct1.Value[1], ctOut.Value[1])
+	} else if ct0.Degree() == 1 && ct1.Degree() == 0 {
+		// ct0 is degree 1, ct1 is degree 0
+		ringQ.MulCoeffsMontgomery(ct0.Value[0], ct1.Value[0], ctOut.Value[0])
+		ringQ.MulCoeffsMontgomery(ct0.Value[1], ct1.Value[0], ctOut.Value[1])
+	} else if ct0.Degree() == 1 && ct1.Degree() == 1 {
+		// Both are degree 1
+		// ctOut[0] = ct0[0] * ct1[0]
+		ringQ.MulCoeffsMontgomery(ct0.Value[0], ct1.Value[0], ctOut.Value[0])
+
+		// ctOut[1] = ct0[0] * ct1[1] + ct0[1] * ct1[0]
+		ringQ.MulCoeffsMontgomery(ct0.Value[0], ct1.Value[1], ctOut.Value[1])
+		ringQ.MulCoeffsMontgomeryThenAdd(ct0.Value[1], ct1.Value[0], ctOut.Value[1])
+
+		// ctOut[2] = ct0[1] * ct1[1]
+		ringQ.MulCoeffsMontgomery(ct0.Value[1], ct1.Value[1], ctOut.Value[2])
+	} else {
+		return fmt.Errorf("unsupported ciphertext degrees for multiplication: %d, %d", ct0.Degree(), ct1.Degree())
+	}
+
+	// Mark output as being in NTT domain
+	ctOut.IsNTT = true
+
+	// Convert back to coefficient domain for proper decryption
+	ringQ.INTT(ctOut.Value[0], ctOut.Value[0])
+	if ctOut.Degree() >= 1 {
+		ringQ.INTT(ctOut.Value[1], ctOut.Value[1])
+	}
+	if ctOut.Degree() >= 2 {
+		ringQ.INTT(ctOut.Value[2], ctOut.Value[2])
+	}
+	ctOut.IsNTT = false
 
 	return nil
 }
@@ -176,52 +199,218 @@ func (eval *Evaluator) MulNew(ct0, ct1 *rlwe.Ciphertext) (*rlwe.Ciphertext, erro
 	return ctOut, err
 }
 
-// Rescale rescales a ciphertext by dividing its scale by the given factor.
-// This is essential after multiplication to keep scales manageable.
-// ct.scale = ct.scale / scaleFactor
-func (eval *Evaluator) Rescale(ct, ctOut *rlwe.Ciphertext, scaleFactor rlwe.Scale) (err error) {
-	level := ct.Level()
+// Rescale divides op0 by the last prime of the moduli chain and repeats this procedure
+// levelsConsumedPerRescaling times. This follows the original CKKS implementation exactly.
+//
+// Returns an error if:
+//   - Either op0 or opOut MetaData are nil
+//   - The level of op0 is too low to enable a rescale
+func (eval *Evaluator) Rescale(op0, opOut *rlwe.Ciphertext) (err error) {
+	if op0.MetaData == nil || opOut.MetaData == nil {
+		return fmt.Errorf("cannot Rescale: op0.MetaData or opOut.MetaData is nil")
+	}
 
-	// Resize output ciphertext
-	ctOut.Resize(ct.Degree(), level)
+	params := eval.parameters
+	nbRescales := eval.levelsConsumedPerRescaling()
 
-	// Update scale
-	ctOut.Scale = ct.Scale.Div(scaleFactor)
-	ctOut.LogDimensions = ct.LogDimensions
-	ctOut.IsBatched = ct.IsBatched
-	ctOut.IsNTT = ct.IsNTT
+	if op0.Level() <= nbRescales-1 {
+		return fmt.Errorf("cannot Rescale: input Ciphertext level is too low")
+	}
 
-	// Get ring at the appropriate level
-	ringQ := eval.parameters.RingQ().AtLevel(level)
+	if op0 != opOut {
+		opOut.Resize(op0.Degree(), op0.Level()-nbRescales)
+	}
 
-	// Convert scale factor to uint64 for division
-	scaleFactorUint64 := scaleFactor.Uint64()
+	*opOut.MetaData = *op0.MetaData
 
-	// For each polynomial coefficient in the ciphertext
-	for i := 0; i <= ct.Degree(); i++ {
-		// For each level (prime)
-		for j := 0; j <= level; j++ {
-			// For each coefficient in the polynomial
-			for k := 0; k < ringQ.N(); k++ {
-				// Get coefficient value at this level
-				coeff := ct.Value[i].Coeffs[j][k]
+	ringQ := params.RingQ().AtLevel(op0.Level())
 
-				// Divide by scale factor with rounding
-				rescaledCoeff := (coeff + scaleFactorUint64/2) / scaleFactorUint64
+	// Scale division by the moduli being removed (same as original CKKS)
+	for i := 0; i < nbRescales; i++ {
+		opOut.Scale = opOut.Scale.Div(rlwe.NewScale(ringQ.SubRings[op0.Level()-i].Modulus))
+	}
 
-				ctOut.Value[i].Coeffs[j][k] = rescaledCoeff
-			}
-		}
+	// Polynomial division using RNS (same as original CKKS)
+	for i := range opOut.Value {
+		ringQ.DivRoundByLastModulusManyNTT(nbRescales, op0.Value[i], eval.buffQ[0], opOut.Value[i])
+	}
+
+	if op0 == opOut {
+		opOut.Resize(op0.Degree(), op0.Level()-nbRescales)
 	}
 
 	return nil
 }
 
 // RescaleNew rescales a ciphertext and returns the result.
-func (eval *Evaluator) RescaleNew(ct *rlwe.Ciphertext, scaleFactor rlwe.Scale) (*rlwe.Ciphertext, error) {
-	ctOut := NewCiphertext(eval.parameters, ct.Degree(), ct.Level())
-	err := eval.Rescale(ct, ctOut, scaleFactor)
+func (eval *Evaluator) RescaleNew(ct *rlwe.Ciphertext) (*rlwe.Ciphertext, error) {
+	nbRescales := eval.levelsConsumedPerRescaling()
+	ctOut := NewCiphertext(eval.parameters, ct.Degree(), ct.Level()-nbRescales)
+	err := eval.Rescale(ct, ctOut)
 	return ctOut, err
+}
+
+// ModDown reduces the level of op0 by levels without rescaling (no scale division).
+// This is equivalent to DropLevel but with proper RNS handling.
+//
+// Returns an error if:
+//   - Either op0 or opOut MetaData are nil
+//   - The level of op0 is too low to enable the operation
+func (eval *Evaluator) ModDown(op0, opOut *rlwe.Ciphertext, levels int) (err error) {
+	if op0.MetaData == nil || opOut.MetaData == nil {
+		return fmt.Errorf("cannot ModDown: op0.MetaData or opOut.MetaData is nil")
+	}
+
+	if op0.Level() <= levels-1 {
+		return fmt.Errorf("cannot ModDown: input Ciphertext level is too low")
+	}
+
+	if op0 != opOut {
+		opOut.Resize(op0.Degree(), op0.Level()-levels)
+	}
+
+	*opOut.MetaData = *op0.MetaData
+
+	// Copy the scale without modification (no division)
+	opOut.Scale = op0.Scale
+
+	// Simply copy the polynomial values (no division by moduli)
+	for i := range opOut.Value {
+		// Copy only the levels we want to keep
+		for j := 0; j <= opOut.Level(); j++ {
+			copy(opOut.Value[i].Coeffs[j], op0.Value[i].Coeffs[j])
+		}
+	}
+
+	if op0 == opOut {
+		opOut.Resize(op0.Degree(), op0.Level()-levels)
+	}
+
+	return nil
+}
+
+// ModDownNew reduces the level of op0 by levels without rescaling and returns the result.
+func (eval *Evaluator) ModDownNew(ct *rlwe.Ciphertext, levels int) (*rlwe.Ciphertext, error) {
+	ctOut := NewCiphertext(eval.parameters, ct.Degree(), ct.Level()-levels)
+	err := eval.ModDown(ct, ctOut, levels)
+	return ctOut, err
+}
+
+// DropLevel reduces the level of op0 by levels and returns the result in op0.
+// No rescaling is applied during this procedure (equivalent to ModDown but in-place).
+func (eval *Evaluator) DropLevel(op0 *rlwe.Ciphertext, levels int) {
+	op0.Resize(op0.Degree(), op0.Level()-levels)
+}
+
+// DropLevelNew reduces the level of op0 by levels and returns the result in a newly created element.
+// No rescaling is applied during this procedure.
+func (eval *Evaluator) DropLevelNew(op0 *rlwe.Ciphertext, levels int) *rlwe.Ciphertext {
+	opOut := op0.CopyNew()
+	eval.DropLevel(opOut, levels)
+	return opOut
+}
+
+// levelsConsumedPerRescaling returns the number of levels consumed per rescaling operation.
+// For Matrix CKKS, we use 1 level per rescaling by default.
+func (eval *Evaluator) levelsConsumedPerRescaling() int {
+	// For Matrix CKKS, we typically consume 1 level per rescaling
+	// This can be adjusted based on the specific parameter set
+	return 1
+}
+
+// MulByConst multiplies a ciphertext by a constant (integer or float)
+func (eval *Evaluator) MulByConst(ct *rlwe.Ciphertext, constant interface{}, ctOut *rlwe.Ciphertext) (err error) {
+	// Check that ciphertexts are at the same level
+	if ct.Level() != ctOut.Level() {
+		return fmt.Errorf("ciphertexts must be at the same level for constant multiplication")
+	}
+
+	// Use the exact same approach as original CKKS
+	// Get the level (minimum of input and output levels, same as original CKKS)
+	level := ct.Level() // In our case, both are at the same level
+
+	// Get the ring at the target level (same as original CKKS)
+	ringQ := eval.parameters.RingQ().AtLevel(level)
+
+	// Convert the constant to *bignum.Complex (following original CKKS approach)
+	cmplxBig := bignum.ToComplex(constant, eval.parameters.EncodingPrecision())
+
+	var scale rlwe.Scale
+	if cmplxBig.IsInt() {
+		// For integer constants, no scaling required
+		scale = rlwe.NewScale(1)
+	} else {
+		// For non-integer constants, use current modulus as scaling factor
+		scale = rlwe.NewScale(ringQ.SubRings[level].Modulus)
+
+		// If multiple moduli are used per rescaling, multiply by additional moduli
+		for i := 1; i < eval.levelsConsumedPerRescaling(); i++ {
+			scale = scale.Mul(rlwe.NewScale(ringQ.SubRings[level-i].Modulus))
+		}
+	}
+
+	// Convert the *bignum.Complex to RNS scalar representation
+	RNSReal, RNSImag := eval.bigComplexToRNSScalar(ringQ, &scale.Value, cmplxBig)
+
+	// RNS scalars are correctly computed
+
+	// Process the RNS scalars the same way as original CKKS
+	// Use the full ring's subrings, not the level-specific ring
+	fullRingQ := eval.parameters.RingQ()
+	for i, s := range fullRingQ.SubRings[:level+1] {
+		RNSImag[i] = ring.MRed(RNSImag[i], s.RootsForward[1], s.Modulus, s.MRedConstant)
+		RNSReal[i], RNSImag[i] = ring.CRed(RNSReal[i]+RNSImag[i], s.Modulus), ring.CRed(RNSReal[i]+s.Modulus-RNSImag[i], s.Modulus)
+	}
+
+	// Multiply each polynomial by the RNS scalar using the same approach as original CKKS
+	for i := 0; i <= ct.Degree(); i++ {
+		// Use the ring's double RNS scalar multiplication
+		ringQ.MulDoubleRNSScalar(ct.Value[i], RNSReal, RNSImag, ctOut.Value[i])
+	}
+
+	// Copy metadata first
+	*ctOut.MetaData = *ct.MetaData
+
+	// Update the scale: multiply by the scaling factor used
+	ctOut.Scale = ct.Scale.Mul(scale)
+
+	return nil
+}
+
+// bigComplexToRNSScalar converts a *bignum.Complex to RNS scalar representation
+// This is adapted from the original CKKS implementation
+func (eval *Evaluator) bigComplexToRNSScalar(r *ring.Ring, scale *big.Float, cmplx *bignum.Complex) (RNSReal, RNSImag ring.RNSScalar) {
+	if scale == nil {
+		scale = new(big.Float).SetFloat64(1)
+	}
+
+	real := new(big.Int)
+	if cmplx[0] != nil {
+		r := new(big.Float).Mul(cmplx[0], scale)
+
+		if cmp := cmplx[0].Cmp(new(big.Float)); cmp > 0 {
+			r.Add(r, new(big.Float).SetFloat64(0.5))
+		} else if cmp < 0 {
+			r.Sub(r, new(big.Float).SetFloat64(0.5))
+		}
+
+		r.Int(real)
+	}
+
+	imag := new(big.Int)
+	if cmplx[1] != nil {
+		i := new(big.Float).Mul(cmplx[1], scale)
+
+		if cmp := cmplx[1].Cmp(new(big.Float)); cmp > 0 {
+			i.Add(i, new(big.Float).SetFloat64(0.5))
+		} else if cmp < 0 {
+			i.Sub(i, new(big.Float).SetFloat64(0.5))
+		}
+
+		i.Int(imag)
+	}
+
+	return r.NewRNSScalarFromBigint(real), r.NewRNSScalarFromBigint(imag)
 }
 
 // max returns the maximum of two integers

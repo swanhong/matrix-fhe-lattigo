@@ -9,17 +9,17 @@ import (
 // These parameters use 3N-friendly ring structures.
 func ExampleParametersLiteral() []rlwe.ParametersLiteral3N {
 	return []rlwe.ParametersLiteral3N{
-		// Small example: N=24 (2^3 * 3^1)
+		// Small example: N=24 (2^3 * 3^1) - Proper RNS-CKKS design
 		{
 			Order2:       3,                  // 2-factor: 2^3 = 8
 			Order3:       1,                  // 3-factor: 3^1 = 3, so N = 8*3 = 24
 			NthRoot:      0,                  // Will be computed automatically
-			LogQ:         []int{50, 40},      // Larger primes for better noise handling
+			LogQ:         []int{30, 30},      // Two 30-bit moduli for proper rescaling
 			LogP:         []int{40},          // Larger auxiliary prime
 			Xe:           ring.Ternary{H: 1}, // Minimal noise
 			Xs:           ring.Ternary{H: 1}, // Minimal secret weight
 			RingType:     ring.Matrix,
-			DefaultScale: rlwe.NewScale(1 << 30), // Larger scale for better precision
+			DefaultScale: rlwe.NewScale(1 << 20), // Smaller scale to avoid modular wraparound
 		},
 		// Medium example: N=48 (2^4 * 3^1)
 		{
@@ -43,7 +43,7 @@ func ExampleParametersLiteral() []rlwe.ParametersLiteral3N {
 			Xe:           ring.Ternary{H: 8},    // Much smaller noise (8 instead of 32)
 			Xs:           ring.Ternary{H: 8},    // Much smaller secret weight
 			RingType:     ring.Matrix,
-			DefaultScale: rlwe.NewScale(1 << 10), // Keep scale small for debugging
+			DefaultScale: rlwe.NewScale(1 << 10),
 		},
 	}
 }
