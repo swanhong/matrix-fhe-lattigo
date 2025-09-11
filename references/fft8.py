@@ -94,16 +94,6 @@ def exponent_vector_mul_transposed(n: int):
     matT, M = exponent_matrix_mul_transposed(n)
     return flatten_rows_to_vector(matT), M
 
-if __name__ == "__main__":
-    n = (2**(3+2)) * (3**3)
-    v1, M1 = exponent_vector_mul(n)
-    v2, M2 = exponent_vector_mul_transposed(n)
-    print("M:", M1, "(should equal M2:", M2, ")")
-    print("v1 length:", len(v1))
-    print("v2 length:", len(v2))
-    print("v1[:10]:", v1[:10])
-    print("v2[:10]:", v2[:10])
-
 def naive_dft8(coeffs):
     index, N = exponent_vector_mul(8)
     out = np.zeros(4, dtype=np.complex128)

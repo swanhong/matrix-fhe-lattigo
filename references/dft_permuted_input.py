@@ -20,7 +20,7 @@ def naive_dft12(coeffs):
     return out
 
 # ---------- Permutation ----------
-def fft_input_permutation(n: int):
+def fft_input_permutation_2then3then2(n: int):
     factors = factorint(n)
     if not set(factors).issubset({2, 3}):
         raise ValueError("n must be of the form 2*3^a*2^b")
@@ -62,6 +62,43 @@ def inverse_permutation(perm):
     for i, p in enumerate(perm):
         inv[p] = i
     return inv
+
+def fft_input_permutation_2then3(n: int):
+    factors = factorint(n)
+    if not set(factors).issubset({2, 3}):
+        raise ValueError("n must be of the form 2 * 2^b * 3^a")
+    if factors.get(2, 0) < 1:
+        raise ValueError("n must be even")
+
+    a = factors.get(3, 0)
+    b = factors.get(2, 0) - 1
+
+    index = [0] * n
+    length = 1
+    index[0] = 0
+
+    shift = None
+    for k in range(b + 1):
+        if k == 0:
+            shift = n >> 1
+        else:
+            shift //= 2
+        base_len = length
+        for i in range(base_len):
+            index[length + i] = index[i] + shift
+        length += base_len
+
+    for _ in range(a):
+        shift //= 3
+        base_len = length
+        for i in range(base_len):
+            index[length + i] = index[i] + shift
+        length += base_len
+        for i in range(base_len):
+            index[length + i] = index[i] + 2 * shift
+        length += base_len
+
+    return index
 
 # ---------- Globals for DFT/IDFT (M=36 cyclotomic) ----------
 M = 36
@@ -141,7 +178,7 @@ def compare_dft6(verbose=True):
 
     y_naive = naive_dft6(x6)
     
-    perm = fft_input_permutation(6)
+    perm = fft_input_permutation_2then3then2(6)
     x6_perm = x6[perm]
     
     dft6(x6_perm)
@@ -162,7 +199,7 @@ def compare_dft12(verbose=True):
 
     y_naive = naive_dft12(x12)
 
-    perm = fft_input_permutation(12)
+    perm = fft_input_permutation_2then3then2(12)
     x12_perm = x12[perm]
     dft12(x12_perm, verbose=verbose)
 
@@ -182,7 +219,7 @@ def test_dft6_idft6():
     x = (np.random.randint(-5, 6, size=6) + 1j*np.random.randint(-5, 6, size=6)).astype(np.complex128)
     print("Original Coeffs:\n", x, "\n")
 
-    perm = fft_input_permutation(6)
+    perm = fft_input_permutation_2then3then2(6)
     invperm = inverse_permutation(perm)
     x_perm = x[perm].copy()   # protect original & ensure contiguous buffer
 
@@ -204,7 +241,7 @@ def test_dft12_idft12():
     x = (np.random.randint(-5, 6, size=12) + 1j*np.random.randint(-5, 6, size=12)).astype(np.complex128)
     print("Original Coeffs:\n", x, "\n")
 
-    perm = fft_input_permutation(12)
+    perm = fft_input_permutation_2then3then2(12)
     invperm = inverse_permutation(perm)
     x_perm = x[perm].copy()
 
